@@ -18,7 +18,7 @@
  *     published by the Free Software Foundation; either version 2 of 
  *     the License, or (at your option) any later version.
  *
- *     Neither Dag Brattli nor University of Tromsø admit liability nor
+ *     Neither Dag Brattli nor University of TromsÃ¸ admit liability nor
  *     provide warranty for any of this software. This material is 
  *     provided "AS-IS" and at no charge.
  *
@@ -29,7 +29,6 @@
 
 #include <asm/param.h>  /* for HZ */
 
-#include <linux/config.h>
 #include <linux/types.h>
 
 #include <net/irda/irda.h>
@@ -49,7 +48,7 @@
 #define DEV_ADDR_ANY  0xffffffff
 
 #define LMP_HEADER          2    /* Dest LSAP + Source LSAP */
-#define LMP_CONTROL_HEADER  4
+#define LMP_CONTROL_HEADER  4    /* LMP_HEADER + opcode + parameter */
 #define LMP_PID_HEADER      1    /* Used by Ultra */
 #define LMP_MAX_HEADER      (LMP_CONTROL_HEADER+LAP_MAX_HEADER)
 
@@ -112,7 +111,7 @@ struct lsap_cb {
 
 	struct timer_list watchdog_timer;
 
-	IRLMP_STATE     lsap_state;  /* Connection state */
+	LSAP_STATE      lsap_state;  /* Connection state */
 	notify_t        notify;      /* Indication/Confirm entry points */
 	struct qos_info qos;         /* QoS for this connection */
 
@@ -135,7 +134,7 @@ typedef struct {
 } CACHE_ENTRY;
 
 /*
- *  Information about each registred IrLAP layer
+ *  Information about each registered IrLAP layer
  */
 struct lap_cb {
 	irda_queue_t queue; /* Must be first */
@@ -257,7 +256,8 @@ static inline __u32 irlmp_get_daddr(const struct lsap_cb *self)
 	return (self && self->lap) ? self->lap->daddr : 0;
 }
 
-extern const char *irlmp_reasons[];
+const char *irlmp_reason_str(LM_REASON reason);
+
 extern int sysctl_discovery_timeout;
 extern int sysctl_discovery_slots;
 extern int sysctl_discovery;
@@ -275,11 +275,11 @@ static inline int irlmp_lap_tx_queue_full(struct lsap_cb *self)
 	if (self->lap->irlap == NULL)
 		return 0;
 
-	return(IRLAP_GET_TX_QUEUE_LEN(self->lap->irlap) >= LAP_HIGH_THRESHOLD);
+	return IRLAP_GET_TX_QUEUE_LEN(self->lap->irlap) >= LAP_HIGH_THRESHOLD;
 }
 
 /* After doing a irlmp_dup(), this get one of the two socket back into
- * a state where it's waiting incomming connections.
+ * a state where it's waiting incoming connections.
  * Note : this can be used *only* if the socket is not yet connected
  * (i.e. NO irlmp_connect_response() done on this socket).
  * - Jean II */

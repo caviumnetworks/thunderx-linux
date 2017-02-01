@@ -5,7 +5,7 @@
  * License.  See the file "COPYING" in the main directory of this archive
  * for more details.
  *
- * Copyright (C) 2004 Silicon Graphics, Inc. All rights reserved.
+ * Copyright (C) 2004, 2006 Silicon Graphics, Inc. All rights reserved.
  */
 
 /*
@@ -19,8 +19,9 @@
 #include <linux/sched.h>
 #include <linux/device.h>
 #include <linux/poll.h>
-#include <linux/module.h>
+#include <linux/init.h>
 #include <linux/slab.h>
+#include <linux/mutex.h>
 #include <asm/sn/io.h>
 #include <asm/sn/sn_sal.h>
 #include <asm/sn/module.h>
@@ -33,8 +34,9 @@
 #define SCDRV_BUFSZ	2048
 #define SCDRV_TIMEOUT	1000
 
+static DEFINE_MUTEX(scdrv_mutex);
 static irqreturn_t
-scdrv_interrupt(int irq, void *subch_data, struct pt_regs *regs)
+scdrv_interrupt(int irq, void *subch_data)
 {
 	struct subch_data_s *sd = subch_data;
 	unsigned long flags;
@@ -77,21 +79,20 @@ scdrv_open(struct inode *inode, struct file *file)
 	scd = container_of(inode->i_cdev, struct sysctl_data_s, scd_cdev);
 
 	/* allocate memory for subchannel data */
-	sd = kmalloc(sizeof (struct subch_data_s), GFP_KERNEL);
+	sd = kzalloc(sizeof (struct subch_data_s), GFP_KERNEL);
 	if (sd == NULL) {
 		printk("%s: couldn't allocate subchannel data\n",
-		       __FUNCTION__);
+		       __func__);
 		return -ENOMEM;
 	}
 
 	/* initialize subch_data_s fields */
-	memset(sd, 0, sizeof (struct subch_data_s));
 	sd->sd_nasid = scd->scd_nasid;
 	sd->sd_subch = ia64_sn_irtr_open(scd->scd_nasid);
 
 	if (sd->sd_subch < 0) {
 		kfree(sd);
-		printk("%s: couldn't allocate subchannel\n", __FUNCTION__);
+		printk("%s: couldn't allocate subchannel\n", __func__);
 		return -EBUSY;
 	}
 
@@ -105,16 +106,17 @@ scdrv_open(struct inode *inode, struct file *file)
 	file->private_data = sd;
 
 	/* hook this subchannel up to the system controller interrupt */
+	mutex_lock(&scdrv_mutex);
 	rv = request_irq(SGI_UART_VECTOR, scdrv_interrupt,
-			 SA_SHIRQ | SA_INTERRUPT,
-			 SYSCTL_BASENAME, sd);
+			 IRQF_SHARED, SYSCTL_BASENAME, sd);
 	if (rv) {
 		ia64_sn_irtr_close(sd->sd_nasid, sd->sd_subch);
 		kfree(sd);
-		printk("%s: irq request failed (%d)\n", __FUNCTION__, rv);
+		printk("%s: irq request failed (%d)\n", __func__, rv);
+		mutex_unlock(&scdrv_mutex);
 		return -EBUSY;
 	}
-
+	mutex_unlock(&scdrv_mutex);
 	return 0;
 }
 
@@ -196,7 +198,7 @@ scdrv_read(struct file *file, char __user *buf, size_t count, loff_t *f_pos)
 		add_wait_queue(&sd->sd_rq, &wait);
 		spin_unlock_irqrestore(&sd->sd_rlock, flags);
 
-		schedule_timeout(SCDRV_TIMEOUT);
+		schedule_timeout(msecs_to_jiffies(SCDRV_TIMEOUT));
 
 		remove_wait_queue(&sd->sd_rq, &wait);
 		if (signal_pending(current)) {
@@ -216,7 +218,7 @@ scdrv_read(struct file *file, char __user *buf, size_t count, loff_t *f_pos)
 		 */
 		if (count < len) {
 			pr_debug("%s: only accepting %d of %d bytes\n",
-				 __FUNCTION__, (int) count, len);
+				 __func__, (int) count, len);
 		}
 		len = min((int) count, len);
 		if (copy_to_user(buf, sd->sd_rb, len))
@@ -292,7 +294,7 @@ scdrv_write(struct file *file, const char __user *buf,
 		add_wait_queue(&sd->sd_wq, &wait);
 		spin_unlock_irqrestore(&sd->sd_wlock, flags);
 
-		schedule_timeout(SCDRV_TIMEOUT);
+		schedule_timeout(msecs_to_jiffies(SCDRV_TIMEOUT));
 
 		remove_wait_queue(&sd->sd_wq, &wait);
 		if (signal_pending(current)) {
@@ -348,14 +350,17 @@ scdrv_poll(struct file *file, struct poll_table_struct *wait)
 	return mask;
 }
 
-static struct file_operations scdrv_fops = {
+static const struct file_operations scdrv_fops = {
 	.owner =	THIS_MODULE,
 	.read =		scdrv_read,
 	.write =	scdrv_write,
 	.poll =		scdrv_poll,
 	.open =		scdrv_open,
 	.release =	scdrv_release,
+	.llseek =	noop_llseek,
 };
+
+static struct class *snsc_class;
 
 /*
  * scdrv_init
@@ -372,41 +377,51 @@ scdrv_init(void)
 	char *devnamep;
 	struct sysctl_data_s *scd;
 	void *salbuf;
-	struct class_simple *snsc_class;
 	dev_t first_dev, dev;
+	nasid_t event_nasid;
 
-	if (alloc_chrdev_region(&first_dev, 0, numionodes,
+	if (!ia64_platform_is("sn2"))
+		return -ENODEV;
+
+	event_nasid = ia64_sn_get_console_nasid();
+
+	snsc_class = class_create(THIS_MODULE, SYSCTL_BASENAME);
+	if (IS_ERR(snsc_class)) {
+		printk("%s: failed to allocate class\n", __func__);
+		return PTR_ERR(snsc_class);
+	}
+
+	if (alloc_chrdev_region(&first_dev, 0, num_cnodes,
 				SYSCTL_BASENAME) < 0) {
 		printk("%s: failed to register SN system controller device\n",
-		       __FUNCTION__);
+		       __func__);
 		return -ENODEV;
 	}
-	snsc_class = class_simple_create(THIS_MODULE, SYSCTL_BASENAME);
 
-	for (cnode = 0; cnode < numionodes; cnode++) {
+	for (cnode = 0; cnode < num_cnodes; cnode++) {
 			geoid = cnodeid_get_geoid(cnode);
 			devnamep = devname;
 			format_module_id(devnamep, geo_module(geoid),
 					 MODULE_FORMAT_BRIEF);
 			devnamep = devname + strlen(devname);
-			sprintf(devnamep, "#%d", geo_slab(geoid));
+			sprintf(devnamep, "^%d#%d", geo_slot(geoid),
+				geo_slab(geoid));
 
 			/* allocate sysctl device data */
-			scd = kmalloc(sizeof (struct sysctl_data_s),
+			scd = kzalloc(sizeof (struct sysctl_data_s),
 				      GFP_KERNEL);
 			if (!scd) {
 				printk("%s: failed to allocate device info"
-				       "for %s/%s\n", __FUNCTION__,
+				       "for %s/%s\n", __func__,
 				       SYSCTL_BASENAME, devname);
 				continue;
 			}
-			memset(scd, 0, sizeof (struct sysctl_data_s));
 
 			/* initialize sysctl device data fields */
 			scd->scd_nasid = cnodeid_to_nasid(cnode);
 			if (!(salbuf = kmalloc(SCDRV_BUFSZ, GFP_KERNEL))) {
 				printk("%s: failed to allocate driver buffer"
-				       "(%s%s)\n", __FUNCTION__,
+				       "(%s%s)\n", __func__,
 				       SYSCTL_BASENAME, devname);
 				kfree(scd);
 				continue;
@@ -418,7 +433,7 @@ scdrv_init(void)
 				    ("%s: failed to initialize SAL for"
 				     " system controller communication"
 				     " (%s/%s): outdated PROM?\n",
-				     __FUNCTION__, SYSCTL_BASENAME, devname);
+				     __func__, SYSCTL_BASENAME, devname);
 				kfree(scd);
 				kfree(salbuf);
 				continue;
@@ -429,20 +444,26 @@ scdrv_init(void)
 			if (cdev_add(&scd->scd_cdev, dev, 1)) {
 				printk("%s: failed to register system"
 				       " controller device (%s%s)\n",
-				       __FUNCTION__, SYSCTL_BASENAME, devname);
+				       __func__, SYSCTL_BASENAME, devname);
 				kfree(scd);
 				kfree(salbuf);
 				continue;
 			}
 
-			class_simple_device_add(snsc_class, dev, NULL,
-						"%s", devname);
+			device_create(snsc_class, NULL, dev, NULL,
+				      "%s", devname);
 
 			ia64_sn_irtr_intr_enable(scd->scd_nasid,
 						 0 /*ignored */ ,
 						 SAL_IROUTER_INTR_RECV);
+
+                        /* on the console nasid, prepare to receive
+                         * system controller environmental events
+                         */
+                        if(scd->scd_nasid == event_nasid) {
+                                scdrv_event_init(scd);
+                        }
 	}
 	return 0;
 }
-
-module_init(scdrv_init);
+device_initcall(scdrv_init);

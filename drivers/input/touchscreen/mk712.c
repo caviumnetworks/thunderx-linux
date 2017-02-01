@@ -17,7 +17,7 @@
  * found in Gateway AOL Connected Touchpad computers.
  *
  * Documentation for ICS MK712 can be found at:
- * 	http://www.icst.com/pdf/mk712.pdf
+ *	http://www.idt.com/products/getDoc.cfm?docID=18713923
  */
 
 /*
@@ -36,7 +36,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/moduleparam.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/errno.h>
@@ -77,11 +76,10 @@ MODULE_PARM_DESC(irq, "IRQ of MK712 touchscreen controller");
 #define MK712_READ_ONE_POINT			0x20
 #define MK712_POWERUP				0x40
 
-static int mk712_used = 0;
-static struct input_dev mk712_dev;
+static struct input_dev *mk712_dev;
 static DEFINE_SPINLOCK(mk712_lock);
 
-static irqreturn_t mk712_interrupt(int irq, void *dev_id, struct pt_regs *regs)
+static irqreturn_t mk712_interrupt(int irq, void *dev_id)
 {
 	unsigned char status;
 	static int debounce = 1;
@@ -89,7 +87,6 @@ static irqreturn_t mk712_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	static unsigned short last_y;
 
 	spin_lock(&mk712_lock);
-	input_regs(&mk712_dev, regs);
 
 	status = inb(mk712_io + MK712_STATUS);
 
@@ -98,28 +95,25 @@ static irqreturn_t mk712_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 		goto end;
 	}
 
-	if (~status & MK712_STATUS_TOUCH)
-	{
+	if (~status & MK712_STATUS_TOUCH) {
 		debounce = 1;
-		input_report_key(&mk712_dev, BTN_TOUCH, 0);
+		input_report_key(mk712_dev, BTN_TOUCH, 0);
 		goto end;
 	}
 
-	if (debounce)
-	{
+	if (debounce) {
 		debounce = 0;
 		goto end;
 	}
 
-	input_report_key(&mk712_dev, BTN_TOUCH, 1);
-	input_report_abs(&mk712_dev, ABS_X, last_x);
-	input_report_abs(&mk712_dev, ABS_Y, last_y);
+	input_report_key(mk712_dev, BTN_TOUCH, 1);
+	input_report_abs(mk712_dev, ABS_X, last_x);
+	input_report_abs(mk712_dev, ABS_Y, last_y);
 
-end:
-
+ end:
 	last_x = inw(mk712_io + MK712_X) & 0x0fff;
 	last_y = inw(mk712_io + MK712_Y) & 0x0fff;
-	input_sync(&mk712_dev);
+	input_sync(mk712_dev);
 	spin_unlock(&mk712_lock);
 	return IRQ_HANDLED;
 }
@@ -130,17 +124,14 @@ static int mk712_open(struct input_dev *dev)
 
 	spin_lock_irqsave(&mk712_lock, flags);
 
-	if (!mk712_used++) {
+	outb(0, mk712_io + MK712_CONTROL); /* Reset */
 
-		outb(0, mk712_io + MK712_CONTROL); /* Reset */
+	outb(MK712_ENABLE_INT | MK712_INT_ON_CONVERSION_COMPLETE |
+		MK712_INT_ON_CHANGE_IN_TOUCH_STATUS |
+		MK712_ENABLE_PERIODIC_CONVERSIONS |
+		MK712_POWERUP, mk712_io + MK712_CONTROL);
 
-		outb(MK712_ENABLE_INT | MK712_INT_ON_CONVERSION_COMPLETE |
-			MK712_INT_ON_CHANGE_IN_TOUCH_STATUS |
-			MK712_ENABLE_PERIODIC_CONVERSIONS |
-			MK712_POWERUP, mk712_io + MK712_CONTROL);
-
-		outb(10, mk712_io + MK712_RATE); /* 187 points per second */
-	}
+	outb(10, mk712_io + MK712_RATE); /* 187 points per second */
 
 	spin_unlock_irqrestore(&mk712_lock, flags);
 
@@ -153,36 +144,16 @@ static void mk712_close(struct input_dev *dev)
 
 	spin_lock_irqsave(&mk712_lock, flags);
 
-	if (!--mk712_used)
-		outb(0, mk712_io + MK712_CONTROL);
+	outb(0, mk712_io + MK712_CONTROL);
 
 	spin_unlock_irqrestore(&mk712_lock, flags);
 }
 
-static struct input_dev mk712_dev = {
-	.evbit   = { BIT(EV_KEY) | BIT(EV_ABS) },
-	.keybit  = { [LONG(BTN_TOUCH)] = BIT(BTN_TOUCH) },
-	.absbit  = { BIT(ABS_X) | BIT(ABS_Y) },
-	.open    = mk712_open,
-	.close   = mk712_close,
-	.name    = "ICS MicroClock MK712 TouchScreen",
-	.phys    = "isa0260/input0",
-	.absmin  = { [ABS_X] = 0, [ABS_Y] = 0 },
-	.absmax  = { [ABS_X] = 0xfff, [ABS_Y] = 0xfff },
-	.absfuzz = { [ABS_X] = 88, [ABS_Y] = 88 },
-	.id      = {
-		.bustype = BUS_ISA,
-		.vendor  = 0x0005,
-		.product = 0x0001,
-		.version = 0x0100,
-	},
-};
-
-int __init mk712_init(void)
+static int __init mk712_init(void)
 {
+	int err;
 
-	if(!request_region(mk712_io, 8, "mk712"))
-	{
+	if (!request_region(mk712_io, 8, "mk712")) {
 		printk(KERN_WARNING "mk712: unable to get IO region\n");
 		return -ENODEV;
 	}
@@ -193,28 +164,54 @@ int __init mk712_init(void)
 	    (inw(mk712_io + MK712_Y) & 0xf000) ||
 	    (inw(mk712_io + MK712_STATUS) & 0xf333)) {
 		printk(KERN_WARNING "mk712: device not present\n");
-		release_region(mk712_io, 8);
-		return -ENODEV;
+		err = -ENODEV;
+		goto fail1;
 	}
 
-	if(request_irq(mk712_irq, mk712_interrupt, 0, "mk712", &mk712_dev))
-	{
+	mk712_dev = input_allocate_device();
+	if (!mk712_dev) {
+		printk(KERN_ERR "mk712: not enough memory\n");
+		err = -ENOMEM;
+		goto fail1;
+	}
+
+	mk712_dev->name = "ICS MicroClock MK712 TouchScreen";
+	mk712_dev->phys = "isa0260/input0";
+	mk712_dev->id.bustype = BUS_ISA;
+	mk712_dev->id.vendor  = 0x0005;
+	mk712_dev->id.product = 0x0001;
+	mk712_dev->id.version = 0x0100;
+
+	mk712_dev->open    = mk712_open;
+	mk712_dev->close   = mk712_close;
+
+	mk712_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
+	mk712_dev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
+	input_set_abs_params(mk712_dev, ABS_X, 0, 0xfff, 88, 0);
+	input_set_abs_params(mk712_dev, ABS_Y, 0, 0xfff, 88, 0);
+
+	if (request_irq(mk712_irq, mk712_interrupt, 0, "mk712", mk712_dev)) {
 		printk(KERN_WARNING "mk712: unable to get IRQ\n");
-		release_region(mk712_io, 8);
-		return -EBUSY;
+		err = -EBUSY;
+		goto fail1;
 	}
 
-	input_register_device(&mk712_dev);
-
-	printk(KERN_INFO "input: ICS MicroClock MK712 TouchScreen at %#x irq %d\n", mk712_io, mk712_irq);
+	err = input_register_device(mk712_dev);
+	if (err)
+		goto fail2;
 
 	return 0;
+
+ fail2:	free_irq(mk712_irq, mk712_dev);
+ fail1:	input_free_device(mk712_dev);
+	release_region(mk712_io, 8);
+	return err;
 }
 
 static void __exit mk712_exit(void)
 {
-	input_unregister_device(&mk712_dev);
-	free_irq(mk712_irq, &mk712_dev);
+	input_unregister_device(mk712_dev);
+	free_irq(mk712_irq, mk712_dev);
 	release_region(mk712_io, 8);
 }
 

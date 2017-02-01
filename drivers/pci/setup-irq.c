@@ -10,21 +10,24 @@
  */
 
 
-#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/pci.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
 #include <linux/cache.h>
 
+void __weak pcibios_update_irq(struct pci_dev *dev, int irq)
+{
+	dev_dbg(&dev->dev, "assigning IRQ %02d\n", irq);
+	pci_write_config_byte(dev, PCI_INTERRUPT_LINE, irq);
+}
 
-static void __init
-pdev_fixup_irq(struct pci_dev *dev,
-	       u8 (*swizzle)(struct pci_dev *, u8 *),
-	       int (*map_irq)(struct pci_dev *, u8, u8))
+static void pdev_fixup_irq(struct pci_dev *dev,
+			   u8 (*swizzle)(struct pci_dev *, u8 *),
+			   int (*map_irq)(const struct pci_dev *, u8, u8))
 {
 	u8 pin, slot;
-	int irq;
+	int irq = 0;
 
 	/* If this device is not on the primary bus, we need to figure out
 	   which interrupt pin it will come in on.   We know which slot it
@@ -33,32 +36,33 @@ pdev_fixup_irq(struct pci_dev *dev,
 	   apply the swizzle function.  */
 
 	pci_read_config_byte(dev, PCI_INTERRUPT_PIN, &pin);
-	/* Cope with 0 and illegal. */
-	if (pin == 0 || pin > 4)
+	/* Cope with illegal. */
+	if (pin > 4)
 		pin = 1;
 
-	/* Follow the chain of bridges, swizzling as we go.  */
-	slot = (*swizzle)(dev, &pin);
+	if (pin != 0) {
+		/* Follow the chain of bridges, swizzling as we go.  */
+		slot = (*swizzle)(dev, &pin);
 
-	irq = (*map_irq)(dev, slot, pin);
-	if (irq == -1)
-		irq = 0;
+		irq = (*map_irq)(dev, slot, pin);
+		if (irq == -1)
+			irq = 0;
+	}
 	dev->irq = irq;
 
-	pr_debug("PCI: fixup irq: (%s) got %d\n",
-		dev->dev.kobj.name, dev->irq);
+	dev_dbg(&dev->dev, "fixup irq: got %d\n", dev->irq);
 
 	/* Always tell the device, so the driver knows what is
 	   the real IRQ to use; the device does not use it. */
 	pcibios_update_irq(dev, irq);
 }
 
-void __init
-pci_fixup_irqs(u8 (*swizzle)(struct pci_dev *, u8 *),
-	       int (*map_irq)(struct pci_dev *, u8, u8))
+void pci_fixup_irqs(u8 (*swizzle)(struct pci_dev *, u8 *),
+		    int (*map_irq)(const struct pci_dev *, u8, u8))
 {
 	struct pci_dev *dev = NULL;
-	while ((dev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, dev)) != NULL) {
+
+	for_each_pci_dev(dev)
 		pdev_fixup_irq(dev, swizzle, map_irq);
-	}
 }
+EXPORT_SYMBOL_GPL(pci_fixup_irqs);

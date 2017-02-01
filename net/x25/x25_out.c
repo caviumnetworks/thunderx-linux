@@ -3,7 +3,7 @@
  *
  *	This is ALPHA test software. This code may break your machine,
  *	randomly fail to work with new releases, misbehave and/or generally
- *	screw up. It might even work. 
+ *	screw up. It might even work.
  *
  *	This code REQUIRES 2.1.15 or higher
  *
@@ -22,6 +22,7 @@
  *					needed cleaned seq-number fields.
  */
 
+#include <linux/slab.h>
 #include <linux/socket.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
@@ -61,14 +62,17 @@ int x25_output(struct sock *sk, struct sk_buff *skb)
 
 	if (skb->len - header_len > max_len) {
 		/* Save a copy of the Header */
-		memcpy(header, skb->data, header_len);
+		skb_copy_from_linear_data(skb, header, header_len);
 		skb_pull(skb, header_len);
 
 		frontlen = skb_headroom(skb);
 
 		while (skb->len > 0) {
-			if ((skbn = sock_alloc_send_skb(sk, frontlen + max_len,
-							noblock, &err)) == NULL){
+			release_sock(sk);
+			skbn = sock_alloc_send_skb(sk, frontlen + max_len,
+						   noblock, &err);
+			lock_sock(sk);
+			if (!skbn) {
 				if (err == -EWOULDBLOCK && noblock){
 					kfree_skb(skb);
 					return sent;
@@ -78,18 +82,18 @@ int x25_output(struct sock *sk, struct sk_buff *skb)
 					       "sent\n", err, sent);
 				return err;
 			}
-				
+
 			skb_reserve(skbn, frontlen);
 
 			len = max_len > skb->len ? skb->len : max_len;
 
 			/* Copy the user data */
-			memcpy(skb_put(skbn, len), skb->data, len);
+			skb_copy_from_linear_data(skb, skb_put(skbn, len), len);
 			skb_pull(skb, len);
 
 			/* Duplicate the Header */
 			skb_push(skbn, header_len);
-			memcpy(skbn->data, header, header_len);
+			skb_copy_to_linear_data(skbn, header, header_len);
 
 			if (skb->len > 0) {
 				if (x25->neighbour->extended)
@@ -101,7 +105,7 @@ int x25_output(struct sock *sk, struct sk_buff *skb)
 			skb_queue_tail(&sk->sk_write_queue, skbn);
 			sent += len;
 		}
-		
+
 		kfree_skb(skb);
 	} else {
 		skb_queue_tail(&sk->sk_write_queue, skb);
@@ -110,7 +114,7 @@ int x25_output(struct sock *sk, struct sk_buff *skb)
 	return sent;
 }
 
-/* 
+/*
  *	This procedure is passed a buffer descriptor for an iframe. It builds
  *	the rest of the control part of the frame and then writes it out.
  */
@@ -131,7 +135,7 @@ static void x25_send_iframe(struct sock *sk, struct sk_buff *skb)
 		skb->data[2] |= (x25->vr << 5) & 0xE0;
 	}
 
-	x25_transmit_link(skb, x25->neighbour);	
+	x25_transmit_link(skb, x25->neighbour);
 }
 
 void x25_kick(struct sock *sk)
@@ -147,8 +151,9 @@ void x25_kick(struct sock *sk)
 	/*
 	 *	Transmit interrupt data.
 	 */
-	if (!x25->intflag && skb_peek(&x25->interrupt_out_queue) != NULL) {
-		x25->intflag = 1;
+	if (skb_peek(&x25->interrupt_out_queue) != NULL &&
+		!test_and_set_bit(X25_INTERRUPT_FLAG, &x25->flags)) {
+
 		skb = skb_dequeue(&x25->interrupt_out_queue);
 		x25_transmit_link(skb, x25->neighbour);
 	}

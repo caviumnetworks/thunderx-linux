@@ -9,6 +9,7 @@
  */
 #include <linux/linkage.h>
 #include <asm/assembler.h>
+#include <asm/unwind.h>
 
 	.text
 	.align	5
@@ -18,6 +19,7 @@
  * mis-aligned by, and r1 is the number of bytes.  If r1 < 4, then we
  * don't bother; we use byte stores instead.
  */
+UNWIND(	.fnstart			)
 1:	subs	r1, r1, #4		@ 1 do we have enough
 	blt	5f			@ 1 bytes to align with?
 	cmp	r3, #2			@ 1
@@ -39,11 +41,17 @@ ENTRY(__memzero)
  */
 	cmp	r1, #16			@ 1 we can skip this chunk if we
 	blt	4f			@ 1 have < 16 bytes
+
+#if ! CALGN(1)+0
+
 /*
  * We need an extra register for this loop - save the return address and
  * use the LR
  */
 	str	lr, [sp, #-4]!		@ 1
+UNWIND(	.fnend				)
+UNWIND(	.fnstart			)
+UNWIND(	.save 	{lr}			)
 	mov	ip, r2			@ 1
 	mov	lr, r2			@ 1
 
@@ -53,7 +61,7 @@ ENTRY(__memzero)
 	stmgeia	r0!, {r2, r3, ip, lr}	@ 4
 	stmgeia	r0!, {r2, r3, ip, lr}	@ 4
 	bgt	3b			@ 1
-	LOADREGS(eqfd, sp!, {pc})	@ 1/2 quick exit
+	ldmeqfd	sp!, {pc}		@ 1/2 quick exit
 /*
  * No need to correct the count; we're only testing bits from now on
  */
@@ -63,7 +71,54 @@ ENTRY(__memzero)
 	tst	r1, #16			@ 1 16 bytes or more?
 	stmneia	r0!, {r2, r3, ip, lr}	@ 4
 	ldr	lr, [sp], #4		@ 1
+UNWIND(	.fnend				)
 
+#else
+
+/*
+ * This version aligns the destination pointer in order to write
+ * whole cache lines at once.
+ */
+
+	stmfd	sp!, {r4-r7, lr}
+UNWIND(	.fnend		       )
+UNWIND(	.fnstart	       )
+UNWIND(	.save 	{r4-r7, lr}    )
+	mov	r4, r2
+	mov	r5, r2
+	mov	r6, r2
+	mov	r7, r2
+	mov	ip, r2
+	mov	lr, r2
+
+	cmp	r1, #96
+	andgts	ip, r0, #31
+	ble	3f
+
+	rsb	ip, ip, #32
+	sub	r1, r1, ip
+	movs	ip, ip, lsl #(32 - 4)
+	stmcsia	r0!, {r4, r5, r6, r7}
+	stmmiia	r0!, {r4, r5}
+	movs	ip, ip, lsl #2
+	strcs	r2, [r0], #4
+
+3:	subs	r1, r1, #64
+	stmgeia	r0!, {r2-r7, ip, lr}
+	stmgeia	r0!, {r2-r7, ip, lr}
+	bgt	3b
+	ldmeqfd	sp!, {r4-r7, pc}
+
+	tst	r1, #32
+	stmneia	r0!, {r2-r7, ip, lr}
+	tst	r1, #16
+	stmneia	r0!, {r4-r7}
+	ldmfd	sp!, {r4-r7, lr}
+UNWIND(	.fnend		       )
+
+#endif
+
+UNWIND(	.fnstart			)
 4:	tst	r1, #8			@ 1 8 bytes or more?
 	stmneia	r0!, {r2, r3}		@ 2
 	tst	r1, #4			@ 1 4 bytes or more?
@@ -77,4 +132,6 @@ ENTRY(__memzero)
 	strneb	r2, [r0], #1		@ 1
 	tst	r1, #1			@ 1 a byte left over
 	strneb	r2, [r0], #1		@ 1
-	RETINSTR(mov,pc,lr)		@ 1
+	ret	lr			@ 1
+UNWIND(	.fnend				)
+ENDPROC(__memzero)

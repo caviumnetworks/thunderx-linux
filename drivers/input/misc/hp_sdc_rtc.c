@@ -41,8 +41,11 @@
 #include <linux/time.h>
 #include <linux/miscdevice.h>
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/poll.h>
 #include <linux/rtc.h>
+#include <linux/mutex.h>
+#include <linux/semaphore.h>
 
 MODULE_AUTHOR("Brian S. Julin <bri@calyx.com>");
 MODULE_DESCRIPTION("HP i8042 SDC + MSM-58321 RTC Driver");
@@ -50,6 +53,7 @@ MODULE_LICENSE("Dual BSD/GPL");
 
 #define RTC_VERSION "1.10d"
 
+static DEFINE_MUTEX(hp_sdc_rtc_mutex);
 static unsigned long epoch = 2000;
 
 static struct semaphore i8042tregs;
@@ -60,22 +64,16 @@ static struct fasync_struct *hp_sdc_rtc_async_queue;
 
 static DECLARE_WAIT_QUEUE_HEAD(hp_sdc_rtc_wait);
 
-static loff_t hp_sdc_rtc_llseek(struct file *file, loff_t offset, int origin);
-
-static ssize_t hp_sdc_rtc_read(struct file *file, char *buf,
+static ssize_t hp_sdc_rtc_read(struct file *file, char __user *buf,
 			       size_t count, loff_t *ppos);
 
-static int hp_sdc_rtc_ioctl(struct inode *inode, struct file *file,
-			    unsigned int cmd, unsigned long arg);
+static long hp_sdc_rtc_unlocked_ioctl(struct file *file,
+				      unsigned int cmd, unsigned long arg);
 
 static unsigned int hp_sdc_rtc_poll(struct file *file, poll_table *wait);
 
 static int hp_sdc_rtc_open(struct inode *inode, struct file *file);
-static int hp_sdc_rtc_release(struct inode *inode, struct file *file);
 static int hp_sdc_rtc_fasync (int fd, struct file *filp, int on);
-
-static int hp_sdc_rtc_read_proc(char *page, char **start, off_t off,
-				int count, int *eof, void *data);
 
 static void hp_sdc_rtc_isr (int irq, void *dev_id, 
 			    uint8_t status, uint8_t data) 
@@ -105,11 +103,13 @@ static int hp_sdc_rtc_do_read_bbrtc (struct rtc_time *rtctm)
 	t.endidx =		91;
 	t.seq =			tseq;
 	t.act.semaphore =	&tsem;
-	init_MUTEX_LOCKED(&tsem);
+	sema_init(&tsem, 0);
 	
 	if (hp_sdc_enqueue_transaction(&t)) return -1;
 	
-	down_interruptible(&tsem);  /* Put ourselves to sleep for results. */
+	/* Put ourselves to sleep for results. */
+	if (WARN_ON(down_interruptible(&tsem)))
+		return -1;
 	
 	/* Check for nonpresence of BBRTC */
 	if (!((tseq[83] | tseq[90] | tseq[69] | tseq[76] |
@@ -176,11 +176,19 @@ static int64_t hp_sdc_rtc_read_i8042timer (uint8_t loadcmd, int numreg)
 	t.seq =			tseq;
 	t.act.semaphore =	&i8042tregs;
 
-	down_interruptible(&i8042tregs);  /* Sleep if output regs in use. */
+	/* Sleep if output regs in use. */
+	if (WARN_ON(down_interruptible(&i8042tregs)))
+		return -1;
 
-	if (hp_sdc_enqueue_transaction(&t)) return -1;
+	if (hp_sdc_enqueue_transaction(&t)) {
+		up(&i8042tregs);
+		return -1;
+	}
 	
-	down_interruptible(&i8042tregs);  /* Sleep until results come back. */
+	/* Sleep until results come back. */
+	if (WARN_ON(down_interruptible(&i8042tregs)))
+		return -1;
+
 	up(&i8042tregs);
 
 	return (tseq[5] | 
@@ -190,7 +198,7 @@ static int64_t hp_sdc_rtc_read_i8042timer (uint8_t loadcmd, int numreg)
 
 
 /* Read the i8042 real-time clock */
-static inline int hp_sdc_rtc_read_rt(struct timeval *res) {
+static inline int hp_sdc_rtc_read_rt(struct timespec64 *res) {
 	int64_t raw;
 	uint32_t tenms; 
 	unsigned int days;
@@ -201,16 +209,16 @@ static inline int hp_sdc_rtc_read_rt(struct timeval *res) {
 	tenms = (uint32_t)raw & 0xffffff;
 	days  = (unsigned int)(raw >> 24) & 0xffff;
 
-	res->tv_usec = (suseconds_t)(tenms % 100) * 10000;
-	res->tv_sec =  (time_t)(tenms / 100) + days * 86400;
+	res->tv_nsec = (long)(tenms % 100) * 10000 * 1000;
+	res->tv_sec =  (tenms / 100) + (time64_t)days * 86400;
 
 	return 0;
 }
 
 
 /* Read the i8042 fast handshake timer */
-static inline int hp_sdc_rtc_read_fhs(struct timeval *res) {
-	uint64_t raw;
+static inline int hp_sdc_rtc_read_fhs(struct timespec64 *res) {
+	int64_t raw;
 	unsigned int tenms;
 
 	raw = hp_sdc_rtc_read_i8042timer(HP_SDC_CMD_LOAD_FHS, 2);
@@ -218,15 +226,15 @@ static inline int hp_sdc_rtc_read_fhs(struct timeval *res) {
 
 	tenms = (unsigned int)raw & 0xffff;
 
-	res->tv_usec = (suseconds_t)(tenms % 100) * 10000;
-	res->tv_sec  = (time_t)(tenms / 100);
+	res->tv_nsec = (long)(tenms % 100) * 10000 * 1000;
+	res->tv_sec  = (time64_t)(tenms / 100);
 
 	return 0;
 }
 
 
 /* Read the i8042 match timer (a.k.a. alarm) */
-static inline int hp_sdc_rtc_read_mt(struct timeval *res) {
+static inline int hp_sdc_rtc_read_mt(struct timespec64 *res) {
 	int64_t raw;	
 	uint32_t tenms; 
 
@@ -235,15 +243,15 @@ static inline int hp_sdc_rtc_read_mt(struct timeval *res) {
 
 	tenms = (uint32_t)raw & 0xffffff;
 
-	res->tv_usec = (suseconds_t)(tenms % 100) * 10000;
-	res->tv_sec  = (time_t)(tenms / 100);
+	res->tv_nsec = (long)(tenms % 100) * 10000 * 1000;
+	res->tv_sec  = (time64_t)(tenms / 100);
 
 	return 0;
 }
 
 
 /* Read the i8042 delay timer */
-static inline int hp_sdc_rtc_read_dt(struct timeval *res) {
+static inline int hp_sdc_rtc_read_dt(struct timespec64 *res) {
 	int64_t raw;
 	uint32_t tenms;
 
@@ -252,15 +260,15 @@ static inline int hp_sdc_rtc_read_dt(struct timeval *res) {
 
 	tenms = (uint32_t)raw & 0xffffff;
 
-	res->tv_usec = (suseconds_t)(tenms % 100) * 10000;
-	res->tv_sec  = (time_t)(tenms / 100);
+	res->tv_nsec = (long)(tenms % 100) * 10000 * 1000;
+	res->tv_sec  = (time64_t)(tenms / 100);
 
 	return 0;
 }
 
 
 /* Read the i8042 cycle timer (a.k.a. periodic) */
-static inline int hp_sdc_rtc_read_ct(struct timeval *res) {
+static inline int hp_sdc_rtc_read_ct(struct timespec64 *res) {
 	int64_t raw;
 	uint32_t tenms;
 
@@ -269,13 +277,14 @@ static inline int hp_sdc_rtc_read_ct(struct timeval *res) {
 
 	tenms = (uint32_t)raw & 0xffffff;
 
-	res->tv_usec = (suseconds_t)(tenms % 100) * 10000;
-	res->tv_sec  = (time_t)(tenms / 100);
+	res->tv_nsec = (long)(tenms % 100) * 10000 * 1000;
+	res->tv_sec  = (time64_t)(tenms / 100);
 
 	return 0;
 }
 
 
+#if 0 /* not used yet */
 /* Set the i8042 real-time clock */
 static int hp_sdc_rtc_set_rt (struct timeval *setto)
 {
@@ -386,20 +395,16 @@ static int hp_sdc_rtc_set_i8042timer (struct timeval *setto, uint8_t setcmd)
 	}
 	return 0;
 }
+#endif
 
-static loff_t hp_sdc_rtc_llseek(struct file *file, loff_t offset, int origin)
-{
-        return -ESPIPE;
-}
-
-static ssize_t hp_sdc_rtc_read(struct file *file, char *buf,
+static ssize_t hp_sdc_rtc_read(struct file *file, char __user *buf,
 			       size_t count, loff_t *ppos) {
 	ssize_t retval;
 
         if (count < sizeof(unsigned long))
                 return -EINVAL;
 
-	retval = put_user(68, (unsigned long *)buf);
+	retval = put_user(68, (unsigned long __user *)buf);
 	return retval;
 }
 
@@ -418,38 +423,24 @@ static int hp_sdc_rtc_open(struct inode *inode, struct file *file)
         return 0;
 }
 
-static int hp_sdc_rtc_release(struct inode *inode, struct file *file)
-{
-	/* Turn off interrupts? */
-
-        if (file->f_flags & FASYNC) {
-                hp_sdc_rtc_fasync (-1, file, 0);
-        }
-
-        return 0;
-}
-
 static int hp_sdc_rtc_fasync (int fd, struct file *filp, int on)
 {
         return fasync_helper (fd, filp, on, &hp_sdc_rtc_async_queue);
 }
 
-static int hp_sdc_rtc_proc_output (char *buf)
+static int hp_sdc_rtc_proc_show(struct seq_file *m, void *v)
 {
 #define YN(bit) ("no")
 #define NY(bit) ("yes")
-        char *p;
         struct rtc_time tm;
-	struct timeval tv;
+	struct timespec64 tv;
 
 	memset(&tm, 0, sizeof(struct rtc_time));
 
-	p = buf;
-
 	if (hp_sdc_rtc_read_bbrtc(&tm)) {
-		p += sprintf(p, "BBRTC\t\t: READ FAILED!\n");
+		seq_puts(m, "BBRTC\t\t: READ FAILED!\n");
 	} else {
-		p += sprintf(p,
+		seq_printf(m,
 			     "rtc_time\t: %02d:%02d:%02d\n"
 			     "rtc_date\t: %04d-%02d-%02d\n"
 			     "rtc_epoch\t: %04lu\n",
@@ -459,41 +450,41 @@ static int hp_sdc_rtc_proc_output (char *buf)
 	}
 
 	if (hp_sdc_rtc_read_rt(&tv)) {
-		p += sprintf(p, "i8042 rtc\t: READ FAILED!\n");
+		seq_puts(m, "i8042 rtc\t: READ FAILED!\n");
 	} else {
-		p += sprintf(p, "i8042 rtc\t: %ld.%02d seconds\n", 
-			     tv.tv_sec, tv.tv_usec/1000);
+		seq_printf(m, "i8042 rtc\t: %lld.%02ld seconds\n",
+			     (s64)tv.tv_sec, (long)tv.tv_nsec/1000000L);
 	}
 
 	if (hp_sdc_rtc_read_fhs(&tv)) {
-		p += sprintf(p, "handshake\t: READ FAILED!\n");
+		seq_puts(m, "handshake\t: READ FAILED!\n");
 	} else {
-        	p += sprintf(p, "handshake\t: %ld.%02d seconds\n", 
-			     tv.tv_sec, tv.tv_usec/1000);
+		seq_printf(m, "handshake\t: %lld.%02ld seconds\n",
+			     (s64)tv.tv_sec, (long)tv.tv_nsec/1000000L);
 	}
 
 	if (hp_sdc_rtc_read_mt(&tv)) {
-		p += sprintf(p, "alarm\t\t: READ FAILED!\n");
+		seq_puts(m, "alarm\t\t: READ FAILED!\n");
 	} else {
-		p += sprintf(p, "alarm\t\t: %ld.%02d seconds\n", 
-			     tv.tv_sec, tv.tv_usec/1000);
+		seq_printf(m, "alarm\t\t: %lld.%02ld seconds\n",
+			     (s64)tv.tv_sec, (long)tv.tv_nsec/1000000L);
 	}
 
 	if (hp_sdc_rtc_read_dt(&tv)) {
-		p += sprintf(p, "delay\t\t: READ FAILED!\n");
+		seq_puts(m, "delay\t\t: READ FAILED!\n");
 	} else {
-		p += sprintf(p, "delay\t\t: %ld.%02d seconds\n", 
-			     tv.tv_sec, tv.tv_usec/1000);
+		seq_printf(m, "delay\t\t: %lld.%02ld seconds\n",
+			     (s64)tv.tv_sec, (long)tv.tv_nsec/1000000L);
 	}
 
 	if (hp_sdc_rtc_read_ct(&tv)) {
-		p += sprintf(p, "periodic\t: READ FAILED!\n");
+		seq_puts(m, "periodic\t: READ FAILED!\n");
 	} else {
-		p += sprintf(p, "periodic\t: %ld.%02d seconds\n", 
-			     tv.tv_sec, tv.tv_usec/1000);
+		seq_printf(m, "periodic\t: %lld.%02ld seconds\n",
+			     (s64)tv.tv_sec, (long)tv.tv_nsec/1000000L);
 	}
 
-        p += sprintf(p,
+        seq_printf(m,
                      "DST_enable\t: %s\n"
                      "BCD\t\t: %s\n"
                      "24hr\t\t: %s\n"
@@ -513,24 +504,24 @@ static int hp_sdc_rtc_proc_output (char *buf)
                      1UL,
                      1 ? "okay" : "dead");
 
-        return  p - buf;
+        return 0;
 #undef YN
 #undef NY
 }
 
-static int hp_sdc_rtc_read_proc(char *page, char **start, off_t off,
-                         int count, int *eof, void *data)
+static int hp_sdc_rtc_proc_open(struct inode *inode, struct file *file)
 {
-	int len = hp_sdc_rtc_proc_output (page);
-        if (len <= off+count) *eof = 1;
-        *start = page + off;
-        len -= off;
-        if (len>count) len = count;
-        if (len<0) len = 0;
-        return len;
+	return single_open(file, hp_sdc_rtc_proc_show, NULL);
 }
 
-static int hp_sdc_rtc_ioctl(struct inode *inode, struct file *file, 
+static const struct file_operations hp_sdc_rtc_proc_fops = {
+	.open		= hp_sdc_rtc_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int hp_sdc_rtc_ioctl(struct file *file, 
 			    unsigned int cmd, unsigned long arg)
 {
 #if 1
@@ -677,15 +668,27 @@ static int hp_sdc_rtc_ioctl(struct inode *inode, struct file *file,
 #endif
 }
 
-static struct file_operations hp_sdc_rtc_fops = {
-        .owner =	THIS_MODULE,
-        .llseek =	hp_sdc_rtc_llseek,
-        .read =		hp_sdc_rtc_read,
-        .poll =		hp_sdc_rtc_poll,
-        .ioctl =	hp_sdc_rtc_ioctl,
-        .open =		hp_sdc_rtc_open,
-        .release =	hp_sdc_rtc_release,
-        .fasync =	hp_sdc_rtc_fasync,
+static long hp_sdc_rtc_unlocked_ioctl(struct file *file,
+				      unsigned int cmd, unsigned long arg)
+{
+	int ret;
+
+	mutex_lock(&hp_sdc_rtc_mutex);
+	ret = hp_sdc_rtc_ioctl(file, cmd, arg);
+	mutex_unlock(&hp_sdc_rtc_mutex);
+
+	return ret;
+}
+
+
+static const struct file_operations hp_sdc_rtc_fops = {
+        .owner =		THIS_MODULE,
+        .llseek =		no_llseek,
+        .read =			hp_sdc_rtc_read,
+        .poll =			hp_sdc_rtc_poll,
+        .unlocked_ioctl =	hp_sdc_rtc_unlocked_ioctl,
+        .open =			hp_sdc_rtc_open,
+        .fasync =		hp_sdc_rtc_fasync,
 };
 
 static struct miscdevice hp_sdc_rtc_dev = {
@@ -698,13 +701,19 @@ static int __init hp_sdc_rtc_init(void)
 {
 	int ret;
 
-	init_MUTEX(&i8042tregs);
+#ifdef __mc68000__
+	if (!MACH_IS_HP300)
+		return -ENODEV;
+#endif
+
+	sema_init(&i8042tregs, 1);
 
 	if ((ret = hp_sdc_request_timer_irq(&hp_sdc_rtc_isr)))
 		return ret;
-	misc_register(&hp_sdc_rtc_dev);
-        create_proc_read_entry ("driver/rtc", 0, 0, 
-				hp_sdc_rtc_read_proc, NULL);
+	if (misc_register(&hp_sdc_rtc_dev) != 0)
+		printk(KERN_INFO "Could not register misc. dev for i8042 rtc\n");
+
+        proc_create("driver/rtc", 0, NULL, &hp_sdc_rtc_proc_fops);
 
 	printk(KERN_INFO "HP i8042 SDC + MSM-58321 RTC support loaded "
 			 "(RTC v " RTC_VERSION ")\n");

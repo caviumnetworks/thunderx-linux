@@ -30,6 +30,7 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <linux/pagemap.h>
 #include <linux/miscdevice.h>
 #include <linux/pm.h>
@@ -43,8 +44,8 @@
  * fix some real stupidity. It's only by chance we can bump
  * past 0.99 at all due to some boolean logic error. */
 #define AGPGART_VERSION_MAJOR 0
-#define AGPGART_VERSION_MINOR 101
-static struct agp_version agp_current_version =
+#define AGPGART_VERSION_MINOR 103
+static const struct agp_version agp_current_version =
 {
 	.major = AGPGART_VERSION_MAJOR,
 	.minor = AGPGART_VERSION_MINOR,
@@ -97,7 +98,7 @@ void agp_backend_release(struct agp_bridge_data *bridge)
 EXPORT_SYMBOL(agp_backend_release);
 
 
-struct { int mem, agp; } maxes_table[] = {
+static const struct { int mem, agp; } maxes_table[] = {
 	{0, 0},
 	{32, 4},
 	{64, 28},
@@ -114,9 +115,9 @@ static int agp_find_max(void)
 	long memory, index, result;
 
 #if PAGE_SHIFT < 20
-	memory = num_physpages >> (20 - PAGE_SHIFT);
+	memory = totalram_pages >> (20 - PAGE_SHIFT);
 #else
-	memory = num_physpages << (PAGE_SHIFT - 20);
+	memory = totalram_pages << (PAGE_SHIFT - 20);
 #endif
 	index = 1;
 
@@ -141,55 +142,63 @@ static int agp_backend_initialize(struct agp_bridge_data *bridge)
 	bridge->version = &agp_current_version;
 
 	if (bridge->driver->needs_scratch_page) {
-		void *addr = bridge->driver->agp_alloc_page(bridge);
+		struct page *page = bridge->driver->agp_alloc_page(bridge);
 
-		if (!addr) {
-			printk(KERN_ERR PFX "unable to get memory for scratch page.\n");
+		if (!page) {
+			dev_err(&bridge->dev->dev,
+				"can't get memory for scratch page\n");
 			return -ENOMEM;
 		}
 
-		bridge->scratch_page_real = virt_to_phys(addr);
-		bridge->scratch_page =
-		    bridge->driver->mask_memory(bridge, bridge->scratch_page_real, 0);
+		bridge->scratch_page_page = page;
+		bridge->scratch_page_dma = page_to_phys(page);
+
+		bridge->scratch_page = bridge->driver->mask_memory(bridge,
+						   bridge->scratch_page_dma, 0);
 	}
 
 	size_value = bridge->driver->fetch_size();
 	if (size_value == 0) {
-		printk(KERN_ERR PFX "unable to determine aperture size.\n");
+		dev_err(&bridge->dev->dev, "can't determine aperture size\n");
 		rc = -EINVAL;
 		goto err_out;
 	}
 	if (bridge->driver->create_gatt_table(bridge)) {
-		printk(KERN_ERR PFX
-		    "unable to get memory for graphics translation table.\n");
+		dev_err(&bridge->dev->dev,
+			"can't get memory for graphics translation table\n");
 		rc = -ENOMEM;
 		goto err_out;
 	}
 	got_gatt = 1;
 
-	bridge->key_list = vmalloc(PAGE_SIZE * 4);
+	bridge->key_list = vzalloc(PAGE_SIZE * 4);
 	if (bridge->key_list == NULL) {
-		printk(KERN_ERR PFX "error allocating memory for key lists.\n");
+		dev_err(&bridge->dev->dev,
+			"can't allocate memory for key lists\n");
 		rc = -ENOMEM;
 		goto err_out;
 	}
 	got_keylist = 1;
 
 	/* FIXME vmalloc'd memory not guaranteed contiguous */
-	memset(bridge->key_list, 0, PAGE_SIZE * 4);
 
 	if (bridge->driver->configure()) {
-		printk(KERN_ERR PFX "error configuring host chipset.\n");
+		dev_err(&bridge->dev->dev, "error configuring host chipset\n");
 		rc = -EINVAL;
 		goto err_out;
 	}
+	INIT_LIST_HEAD(&bridge->mapped_list);
+	spin_lock_init(&bridge->mapped_lock);
 
 	return 0;
 
 err_out:
-	if (bridge->driver->needs_scratch_page)
-		bridge->driver->agp_destroy_page(
-				phys_to_virt(bridge->scratch_page_real));
+	if (bridge->driver->needs_scratch_page) {
+		struct page *page = bridge->scratch_page_page;
+
+		bridge->driver->agp_destroy_page(page, AGP_PAGE_DESTROY_UNMAP);
+		bridge->driver->agp_destroy_page(page, AGP_PAGE_DESTROY_FREE);
+	}
 	if (got_gatt)
 		bridge->driver->free_gatt_table(bridge);
 	if (got_keylist) {
@@ -206,15 +215,17 @@ static void agp_backend_cleanup(struct agp_bridge_data *bridge)
 		bridge->driver->cleanup();
 	if (bridge->driver->free_gatt_table)
 		bridge->driver->free_gatt_table(bridge);
-	if (bridge->key_list) {
-		vfree(bridge->key_list);
-		bridge->key_list = NULL;
-	}
+
+	vfree(bridge->key_list);
+	bridge->key_list = NULL;
 
 	if (bridge->driver->agp_destroy_page &&
-	    bridge->driver->needs_scratch_page)
-		bridge->driver->agp_destroy_page(
-				phys_to_virt(bridge->scratch_page_real));
+	    bridge->driver->needs_scratch_page) {
+		struct page *page = bridge->scratch_page_page;
+
+		bridge->driver->agp_destroy_page(page, AGP_PAGE_DESTROY_UNMAP);
+		bridge->driver->agp_destroy_page(page, AGP_PAGE_DESTROY_FREE);
+	}
 }
 
 /* When we remove the global variable agp_bridge from all drivers
@@ -223,12 +234,12 @@ static void agp_backend_cleanup(struct agp_bridge_data *bridge)
 
 struct agp_bridge_data *agp_alloc_bridge(void)
 {
-	struct agp_bridge_data *bridge = kmalloc(sizeof(*bridge), GFP_KERNEL);
+	struct agp_bridge_data *bridge;
 
+	bridge = kzalloc(sizeof(*bridge), GFP_KERNEL);
 	if (!bridge)
 		return NULL;
 
-	memset(bridge, 0, sizeof(*bridge));
 	atomic_set(&bridge->agp_in_use, 0);
 	atomic_set(&bridge->current_memory_agp, 0);
 
@@ -254,35 +265,41 @@ int agp_add_bridge(struct agp_bridge_data *bridge)
 {
 	int error;
 
-	if (agp_off)
-		return -ENODEV;
+	if (agp_off) {
+		error = -ENODEV;
+		goto err_put_bridge;
+	}
 
 	if (!bridge->dev) {
 		printk (KERN_DEBUG PFX "Erk, registering with no pci_dev!\n");
-		return -EINVAL;
+		error = -EINVAL;
+		goto err_put_bridge;
 	}
 
 	/* Grab reference on the chipset driver. */
 	if (!try_module_get(bridge->driver->owner)) {
-		printk (KERN_INFO PFX "Couldn't lock chipset driver.\n");
-		return -EINVAL;
+		dev_info(&bridge->dev->dev, "can't lock chipset driver\n");
+		error = -EINVAL;
+		goto err_put_bridge;
 	}
 
 	error = agp_backend_initialize(bridge);
 	if (error) {
-		printk (KERN_INFO PFX "agp_backend_initialize() failed.\n");
+		dev_info(&bridge->dev->dev,
+			 "agp_backend_initialize() failed\n");
 		goto err_out;
 	}
 
 	if (list_empty(&agp_bridges)) {
 		error = agp_frontend_initialize();
 		if (error) {
-			printk (KERN_INFO PFX "agp_frontend_initialize() failed.\n");
+			dev_info(&bridge->dev->dev,
+				 "agp_frontend_initialize() failed\n");
 			goto frontend_err;
 		}
 
-		printk(KERN_INFO PFX "AGP aperture is %dM @ 0x%lx\n",
-			bridge->driver->fetch_size(), bridge->gart_bus_addr);
+		dev_info(&bridge->dev->dev, "AGP aperture is %dM @ 0x%lx\n",
+			 bridge->driver->fetch_size(), bridge->gart_bus_addr);
 
 	}
 
@@ -293,6 +310,7 @@ frontend_err:
 	agp_backend_cleanup(bridge);
 err_out:
 	module_put(bridge->driver->owner);
+err_put_bridge:
 	agp_put_bridge(bridge);
 	return error;
 }
@@ -317,12 +335,12 @@ EXPORT_SYMBOL(agp_try_unsupported_boot);
 static int __init agp_init(void)
 {
 	if (!agp_off)
-		printk(KERN_INFO "Linux agpgart interface v%d.%d (c) Dave Jones\n",
+		printk(KERN_INFO "Linux agpgart interface v%d.%d\n",
 			AGPGART_VERSION_MAJOR, AGPGART_VERSION_MINOR);
 	return 0;
 }
 
-void __exit agp_exit(void)
+static void __exit agp_exit(void)
 {
 }
 
@@ -338,7 +356,7 @@ static __init int agp_setup(char *s)
 __setup("agp=", agp_setup);
 #endif
 
-MODULE_AUTHOR("Dave Jones <davej@codemonkey.org.uk>");
+MODULE_AUTHOR("Dave Jones, Jeff Hartmann");
 MODULE_DESCRIPTION("AGP GART driver");
 MODULE_LICENSE("GPL and additional rights");
 MODULE_ALIAS_MISCDEV(AGPGART_MINOR);

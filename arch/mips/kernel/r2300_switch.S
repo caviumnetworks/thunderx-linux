@@ -5,18 +5,16 @@
  * Copyright (C) 1994, 1995, 1996 by Andreas Busse
  *
  * Multi-cpu abstraction and macros for easier reading:
- * Copyright (C) 1996 David S. Miller (dm@engr.sgi.com)
+ * Copyright (C) 1996 David S. Miller (davem@davemloft.net)
  *
  * Further modifications to make this work:
  * Copyright (c) 1998-2000 Harald Koerfgen
  */
-#include <linux/config.h>
 #include <asm/asm.h>
 #include <asm/cachectl.h>
 #include <asm/fpregdef.h>
 #include <asm/mipsregs.h>
-#include <asm/offset.h>
-#include <asm/page.h>
+#include <asm/asm-offsets.h>
 #include <asm/regdef.h>
 #include <asm/stackframe.h>
 #include <asm/thread_info.h>
@@ -33,52 +31,21 @@
 #define ST_OFF (_THREAD_SIZE - 32 - PT_SIZE + PT_STATUS)
 
 /*
- * FPU context is saved iff the process has used it's FPU in the current
- * time slice as indicated by TIF_USEDFPU.  In any case, the CU1 bit for user
- * space STATUS register should be 0, so that a process *always* starts its 
- * userland with FPU disabled after each context switch.
- *
- * FPU will be enabled as soon as the process accesses FPU again, through
- * do_cpu() trap.
- */
-
-/*
  * task_struct *resume(task_struct *prev, task_struct *next,
- *                     struct thread_info *next_ti) )
+ *		       struct thread_info *next_ti)
  */
 LEAF(resume)
-#ifndef CONFIG_CPU_HAS_LLSC
-	sw      zero, ll_bit
-#endif
 	mfc0	t1, CP0_STATUS
 	sw	t1, THREAD_STATUS(a0)
 	cpu_save_nonscratch a0
 	sw	ra, THREAD_REG31(a0)
 
-	/* 
-	 * check if we need to save FPU registers
-	 */
-	lw	t3, TASK_THREAD_INFO(a0)
-	lw	t0, TI_FLAGS(t3)
-	li	t1, _TIF_USEDFPU
-	and	t2, t0, t1
-	beqz	t2, 1f
-	nor	t1, zero, t1
+#if defined(CONFIG_CC_STACKPROTECTOR) && !defined(CONFIG_SMP)
+	PTR_LA	t8, __stack_chk_guard
+	LONG_L	t9, TASK_STACK_CANARY(a1)
+	LONG_S	t9, 0(t8)
+#endif
 
-	and	t0, t0, t1
-	sw	t0, TI_FLAGS(t3)
-
-	/*
-	 * clear saved user stack CU1 bit
-	 */
-	lw	t0, ST_OFF(t3)
-	li	t1, ~ST0_CU1
-	and	t0, t0, t1
-	sw	t0, ST_OFF(t3)
-
-	fpu_save_single a0, t0			# clobbers t0
-
-1:
 	/*
 	 * The order of restoring the registers takes care of the race
 	 * updating $28, $29 and kernelsp without disabling ints.
@@ -122,10 +89,11 @@ LEAF(_restore_fp)
  * the property that no matter whether considered as single or as double
  * precision represents signaling NANS.
  *
- * We initialize fcr31 to rounding to nearest, no exceptions.
+ * The value to initialize fcr31 to comes in $a0.
  */
 
-#define FPU_DEFAULT  0x00000000
+	.set push
+	SET_HARDFLOAT
 
 LEAF(_init_fpu)
 	mfc0	t0, CP0_STATUS
@@ -133,8 +101,7 @@ LEAF(_init_fpu)
 	or	t0, t1
 	mtc0	t0, CP0_STATUS
 
-	li	t1, FPU_DEFAULT
-	ctc1	t1, fcr31
+	ctc1	a0, fcr31
 
 	li	t0, -1
 
@@ -172,3 +139,5 @@ LEAF(_init_fpu)
 	mtc1	t0, $f31
 	jr	ra
 	END(_init_fpu)
+
+	.set pop

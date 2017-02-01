@@ -44,7 +44,7 @@
  * the generic Linux PPP driver. Because IrNET depend on recent
  * changes of the PPP driver interface, IrNET will work only with very
  * recent kernel (2.3.99-pre6 and up).
- * 
+ *
  * The present implementation offer the following features :
  *	o simple user interface using pppd
  *	o efficient implementation (interface directly to PPP and IrTTP)
@@ -73,7 +73,7 @@
  * Infinite thanks to those brave souls for providing the infrastructure
  * upon which IrNET is built.
  *
- * Thanks to all my collegues in HP for helping me. In particular,
+ * Thanks to all my colleagues in HP for helping me. In particular,
  * thanks to Salil Pradhan and Bill Serra for W2k testing...
  * Thanks to Luiz Magalhaes for irnetd and much testing...
  *
@@ -244,17 +244,17 @@
 #include <linux/skbuff.h>
 #include <linux/tty.h>
 #include <linux/proc_fs.h>
-#include <linux/devfs_fs_kernel.h>
 #include <linux/netdevice.h>
 #include <linux/miscdevice.h>
 #include <linux/poll.h>
-#include <linux/config.h>
+#include <linux/capability.h>
 #include <linux/ctype.h>	/* isspace() */
+#include <linux/string.h>	/* skip_spaces() */
 #include <asm/uaccess.h>
 #include <linux/init.h>
 
 #include <linux/ppp_defs.h>
-#include <linux/if_ppp.h>
+#include <linux/ppp-ioctl.h>
 #include <linux/ppp_channel.h>
 
 #include <net/irda/irda.h>
@@ -328,7 +328,7 @@
 
 #define DEBUG_ASSERT		0	/* Verify all assertions */
 
-/* 
+/*
  * These are the macros we are using to actually print the debug
  * statements. Don't look at it, it's ugly...
  *
@@ -338,27 +338,27 @@
 /* All error messages (will show up in the normal logs) */
 #define DERROR(dbg, format, args...) \
 	{if(DEBUG_##dbg) \
-		printk(KERN_INFO "irnet: %s(): " format, __FUNCTION__ , ##args);}
+		printk(KERN_INFO "irnet: %s(): " format, __func__ , ##args);}
 
 /* Normal debug message (will show up in /var/log/debug) */
 #define DEBUG(dbg, format, args...) \
 	{if(DEBUG_##dbg) \
-		printk(KERN_DEBUG "irnet: %s(): " format, __FUNCTION__ , ##args);}
+		printk(KERN_DEBUG "irnet: %s(): " format, __func__ , ##args);}
 
 /* Entering a function (trace) */
 #define DENTER(dbg, format, args...) \
 	{if(DEBUG_##dbg) \
-		printk(KERN_DEBUG "irnet: -> %s" format, __FUNCTION__ , ##args);}
+		printk(KERN_DEBUG "irnet: -> %s" format, __func__ , ##args);}
 
 /* Entering and exiting a function in one go (trace) */
 #define DPASS(dbg, format, args...) \
 	{if(DEBUG_##dbg) \
-		printk(KERN_DEBUG "irnet: <>%s" format, __FUNCTION__ , ##args);}
+		printk(KERN_DEBUG "irnet: <>%s" format, __func__ , ##args);}
 
 /* Exiting a function (trace) */
 #define DEXIT(dbg, format, args...) \
 	{if(DEBUG_##dbg) \
-		printk(KERN_DEBUG "irnet: <-%s()" format, __FUNCTION__ , ##args);}
+		printk(KERN_DEBUG "irnet: <-%s()" format, __func__ , ##args);}
 
 /* Exit a function with debug */
 #define DRETURN(ret, dbg, args...) \
@@ -406,7 +406,7 @@ typedef struct irnet_socket
   /* "pppd" interact directly with us on a /dev/ file */
   struct file *		file;		/* File descriptor of this instance */
   /* TTY stuff - to keep "pppd" happy */
-  struct termios	termios;	/* Various tty flags */
+  struct ktermios	termios;	/* Various tty flags */
   /* Stuff for the control channel */
   int			event_index;	/* Last read in the event log */
 
@@ -420,7 +420,7 @@ typedef struct irnet_socket
   u32			raccm;		/* to please pppd - dummy) */
   unsigned int		flags;		/* PPP flags (compression, ...) */
   unsigned int		rbits;		/* Unused receive flags ??? */
-
+  struct work_struct disconnect_work;   /* Process context disconnection */
   /* ------------------------ IrTTP part ------------------------ */
   /* We create a pseudo "socket" over the IrDA tranport */
   unsigned long		ttp_open;	/* Set when IrTTP is ready */
@@ -457,6 +457,8 @@ typedef struct irnet_socket
   struct irda_device_info *discoveries;	/* Copy of the discovery log */
   int			disco_index;	/* Last read in the discovery log */
   int			disco_number;	/* Size of the discovery log */
+
+  struct mutex		lock;
 
 } irnet_socket;
 
@@ -507,19 +509,11 @@ typedef struct irnet_ctrl_channel
  */
 
 /* -------------------------- IRDA PART -------------------------- */
-extern int
-	irda_irnet_create(irnet_socket *);	/* Initialise a IrNET socket */
-extern int
-	irda_irnet_connect(irnet_socket *);	/* Try to connect over IrDA */
-extern void
-	irda_irnet_destroy(irnet_socket *);	/* Teardown  a IrNET socket */
-extern int
-	irda_irnet_init(void);		/* Initialise IrDA part of IrNET */
-extern void
-	irda_irnet_cleanup(void);	/* Teardown IrDA part of IrNET */
-/* ---------------------------- MODULE ---------------------------- */
-extern int
-	irnet_init(void);		/* Initialise IrNET module */
+int irda_irnet_create(irnet_socket *);	/* Initialise an IrNET socket */
+int irda_irnet_connect(irnet_socket *);	/* Try to connect over IrDA */
+void irda_irnet_destroy(irnet_socket *);	/* Teardown an IrNET socket */
+int irda_irnet_init(void);		/* Initialise IrDA part of IrNET */
+void irda_irnet_cleanup(void);		/* Teardown IrDA part of IrNET */
 
 /**************************** VARIABLES ****************************/
 

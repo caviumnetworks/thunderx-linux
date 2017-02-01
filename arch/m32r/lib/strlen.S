@@ -6,10 +6,7 @@
  *  size_t strlen(const char *s);
  *
  */
-/* $Id$ */
 
-
-#include <linux/config.h>
 #include <linux/linkage.h>
 #include <asm/assembler.h>
 

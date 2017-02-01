@@ -20,18 +20,16 @@
  *
  */
 
-#include <linux/config.h>
 
 #include <asm/uaccess.h>
 
 #include <linux/errno.h>
 #include <linux/fs.h>
-#include <linux/ncp_fs.h>
 #include <linux/time.h>
+#include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/stat.h>
-#include "ncplib_kernel.h"
-
+#include "ncp_fs.h"
 
 /* these magic numbers must appear in the symlink file -- this makes it a bit
    more resilient against the magic attributes being set on random files. */
@@ -49,7 +47,7 @@ static int ncp_symlink_readpage(struct file *file, struct page *page)
 	char *buf = kmap(page);
 
 	error = -ENOMEM;
-	rawlink=(char *)kmalloc(NCP_MAX_SYMLINK_SIZE, GFP_KERNEL);
+	rawlink = kmalloc(NCP_MAX_SYMLINK_SIZE, GFP_KERNEL);
 	if (!rawlink)
 		goto fail;
 
@@ -99,7 +97,7 @@ fail:
 /*
  * symlinks can't do much...
  */
-struct address_space_operations ncp_symlink_aops = {
+const struct address_space_operations ncp_symlink_aops = {
 	.readpage	= ncp_symlink_readpage,
 };
 	
@@ -110,11 +108,11 @@ int ncp_symlink(struct inode *dir, struct dentry *dentry, const char *symname) {
 	char *rawlink;
 	int length, err, i, outlen;
 	int kludge;
-	int mode;
+	umode_t mode;
 	__le32 attr;
 	unsigned int hdr;
 
-	DPRINTK("ncp_symlink(dir=%p,dentry=%p,symname=%s)\n",dir,dentry,symname);
+	ncp_dbg(1, "dir=%p, dentry=%p, symname=%s\n", dir, dentry, symname);
 
 	if (ncp_is_nfs_extras(NCP_SERVER(dir), NCP_FINFO(dir)->volNumber))
 		kludge = 0;
@@ -127,7 +125,7 @@ int ncp_symlink(struct inode *dir, struct dentry *dentry, const char *symname) {
 	/* EPERM is returned by VFS if symlink procedure does not exist */
 		return -EPERM;
   
-	rawlink=(char *)kmalloc(NCP_MAX_SYMLINK_SIZE, GFP_KERNEL);
+	rawlink = kmalloc(NCP_MAX_SYMLINK_SIZE, GFP_KERNEL);
 	if (!rawlink)
 		return -ENOMEM;
 
@@ -158,7 +156,7 @@ int ncp_symlink(struct inode *dir, struct dentry *dentry, const char *symname) {
 		goto failfree;
 	}
 
-	inode=dentry->d_inode;
+	inode=d_inode(dentry);
 
 	if (ncp_make_open(inode, O_WRONLY))
 		goto failfree;

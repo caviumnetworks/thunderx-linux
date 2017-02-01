@@ -1,4 +1,4 @@
-#include <linux/config.h>
+#if defined(CONFIG_MMU) && !defined(CONFIG_COLDFIRE)
 PHDRS
 {
   text PT_LOAD FILEHDR PHDRS FLAGS (7);
@@ -8,4 +8,7 @@ PHDRS
 #include "vmlinux-sun3.lds"
 #else
 #include "vmlinux-std.lds"
+#endif
+#else
+#include "vmlinux-nommu.lds"
 #endif

@@ -2,7 +2,7 @@
  * csum_partial_copy - do IP checksumming and copy
  *
  * (C) Copyright 1996 Linus Torvalds
- * accellerated versions (and 21264 assembly versions ) contributed by
+ * accelerated versions (and 21264 assembly versions ) contributed by
  *	Rick Gorton	<rick.gorton@alpha-processor.com>
  *
  * Don't look at this too closely - you'll go mad. The things
@@ -130,7 +130,7 @@ csum_partial_cfu_aligned(const unsigned long __user *src, unsigned long *dst,
 		*dst = word | tmp;
 		checksum += carry;
 	}
-	if (err) *errp = err;
+	if (err && errp) *errp = err;
 	return checksum;
 }
 
@@ -185,7 +185,7 @@ csum_partial_cfu_dest_aligned(const unsigned long __user *src,
 		*dst = word | tmp;
 		checksum += carry;
 	}
-	if (err) *errp = err;
+	if (err && errp) *errp = err;
 	return checksum;
 }
 
@@ -242,7 +242,7 @@ csum_partial_cfu_src_aligned(const unsigned long __user *src,
 	stq_u(partial_dest | second_dest, dst);
 out:
 	checksum += carry;
-	if (err) *errp = err;
+	if (err && errp) *errp = err;
 	return checksum;
 }
 
@@ -325,19 +325,24 @@ csum_partial_cfu_unaligned(const unsigned long __user * src,
 		stq_u(partial_dest | word | second_dest, dst);
 		checksum += carry;
 	}
-	if (err) *errp = err;
+	if (err && errp) *errp = err;
 	return checksum;
 }
 
-static unsigned int
-do_csum_partial_copy_from_user(const char __user *src, char *dst, int len,
-			       unsigned int sum, int *errp)
+__wsum
+csum_partial_copy_from_user(const void __user *src, void *dst, int len,
+			       __wsum sum, int *errp)
 {
-	unsigned long checksum = (unsigned) sum;
+	unsigned long checksum = (__force u32) sum;
 	unsigned long soff = 7 & (unsigned long) src;
 	unsigned long doff = 7 & (unsigned long) dst;
 
 	if (len) {
+		if (!access_ok(VERIFY_READ, src, len)) {
+			if (errp) *errp = -EFAULT;
+			memset(dst, 0, len);
+			return sum;
+		}
 		if (!doff) {
 			if (!soff)
 				checksum = csum_partial_cfu_aligned(
@@ -367,25 +372,19 @@ do_csum_partial_copy_from_user(const char __user *src, char *dst, int len,
 		}
 		checksum = from64to16 (checksum);
 	}
+	return (__force __wsum)checksum;
+}
+EXPORT_SYMBOL(csum_partial_copy_from_user);
+
+__wsum
+csum_partial_copy_nocheck(const void *src, void *dst, int len, __wsum sum)
+{
+	__wsum checksum;
+	mm_segment_t oldfs = get_fs();
+	set_fs(KERNEL_DS);
+	checksum = csum_partial_copy_from_user((__force const void __user *)src,
+						dst, len, sum, NULL);
+	set_fs(oldfs);
 	return checksum;
 }
-
-unsigned int
-csum_partial_copy_from_user(const char __user *src, char *dst, int len,
-			    unsigned int sum, int *errp)
-{
-	if (!access_ok(VERIFY_READ, src, len)) {
-		*errp = -EFAULT;
-		memset(dst, 0, len);
-		return sum;
-	}
-
-	return do_csum_partial_copy_from_user(src, dst, len, sum, errp);
-}
-
-unsigned int
-csum_partial_copy_nocheck(const char __user *src, char *dst, int len,
-			  unsigned int sum)
-{
-	return do_csum_partial_copy_from_user(src, dst, len, sum, NULL);
-}
+EXPORT_SYMBOL(csum_partial_copy_nocheck);

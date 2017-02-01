@@ -3,7 +3,7 @@
 
 /*
  *  Routines for Asahi Kasei AK4114
- *  Copyright (c) by Jaroslav Kysela <perex@suse.cz>,
+ *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>,
  *
  *
  *   This program is free software; you can redistribute it and/or modify
@@ -73,7 +73,7 @@
 
 /* AK4114_REQ_FORMAT bits */
 #define AK4114_MONO		(1<<7)	/* Double Sampling Frequency Mode: 0 = stereo, 1 = mono */
-#define AK4114_DIF2		(1<<5)	/* Audio Data Control */
+#define AK4114_DIF2		(1<<6)	/* Audio Data Control */
 #define AK4114_DIF1		(1<<5)	/* Audio Data Control */
 #define AK4114_DIF0		(1<<4)	/* Audio Data Control */
 #define AK4114_DIF_16R		(0)				/* STDO: 16-bit, right justified */
@@ -95,13 +95,13 @@
 
 /* AK4114_REG_IO0 */
 #define AK4114_TX1E		(1<<7)	/* TX1 Output Enable (1 = enable) */
-#define AK4114_OPS12		(1<<2)	/* Output Though Data Selector for TX1 pin */
-#define AK4114_OPS11		(1<<1)	/* Output Though Data Selector for TX1 pin */
-#define AK4114_OPS10		(1<<0)	/* Output Though Data Selector for TX1 pin */
+#define AK4114_OPS12		(1<<6)	/* Output Data Selector for TX1 pin */
+#define AK4114_OPS11		(1<<5)	/* Output Data Selector for TX1 pin */
+#define AK4114_OPS10		(1<<4)	/* Output Data Selector for TX1 pin */
 #define AK4114_TX0E		(1<<3)	/* TX0 Output Enable (1 = enable) */
-#define AK4114_OPS02		(1<<2)	/* Output Though Data Selector for TX0 pin */
-#define AK4114_OPS01		(1<<1)	/* Output Though Data Selector for TX0 pin */
-#define AK4114_OPS00		(1<<0)	/* Output Though Data Selector for TX0 pin */
+#define AK4114_OPS02		(1<<2)	/* Output Data Selector for TX0 pin */
+#define AK4114_OPS01		(1<<1)	/* Output Data Selector for TX0 pin */
+#define AK4114_OPS00		(1<<0)	/* Output Data Selector for TX0 pin */
 
 /* AK4114_REG_IO1 */
 #define AK4114_EFH1		(1<<7)	/* Interrupt 0 pin Hold */
@@ -158,48 +158,55 @@
 #define AK4114_CHECK_NO_STAT	(1<<0)	/* no statistics */
 #define AK4114_CHECK_NO_RATE	(1<<1)	/* no rate check */
 
-#define AK4114_CONTROLS		14
+#define AK4114_CONTROLS		15
 
 typedef void (ak4114_write_t)(void *private_data, unsigned char addr, unsigned char data);
 typedef unsigned char (ak4114_read_t)(void *private_data, unsigned char addr);
 
-typedef struct ak4114 ak4114_t;
-
 struct ak4114 {
-	snd_card_t * card;
+	struct snd_card *card;
 	ak4114_write_t * write;
 	ak4114_read_t * read;
 	void * private_data;
-	unsigned int init: 1;
+	atomic_t wq_processing;
+	struct mutex reinit_mutex;
 	spinlock_t lock;
-	unsigned char regmap[7];
+	unsigned char regmap[6];
 	unsigned char txcsb[5];
-	snd_kcontrol_t *kctls[AK4114_CONTROLS];
-	snd_pcm_substream_t *playback_substream;
-	snd_pcm_substream_t *capture_substream;
+	struct snd_kcontrol *kctls[AK4114_CONTROLS];
+	struct snd_pcm_substream *playback_substream;
+	struct snd_pcm_substream *capture_substream;
 	unsigned long parity_errors;
 	unsigned long v_bit_errors;
 	unsigned long qcrc_errors;
 	unsigned long ccrc_errors;
 	unsigned char rcs0;
 	unsigned char rcs1;
-	struct workqueue_struct *workqueue;
-	struct work_struct work;
+	struct delayed_work work;
+	unsigned int check_flags;
 	void *change_callback_private;
-	void (*change_callback)(ak4114_t *ak4114, unsigned char c0, unsigned char c1);
+	void (*change_callback)(struct ak4114 *ak4114, unsigned char c0, unsigned char c1);
 };
 
-int snd_ak4114_create(snd_card_t *card,
+int snd_ak4114_create(struct snd_card *card,
 		      ak4114_read_t *read, ak4114_write_t *write,
-		      unsigned char pgm[7], unsigned char txcsb[5],
-		      void *private_data, ak4114_t **r_ak4114);
-void snd_ak4114_reg_write(ak4114_t *ak4114, unsigned char reg, unsigned char mask, unsigned char val);
-void snd_ak4114_reinit(ak4114_t *ak4114);
-int snd_ak4114_build(ak4114_t *ak4114,
-		     snd_pcm_substream_t *playback_substream,
-                     snd_pcm_substream_t *capture_substream);
-int snd_ak4114_external_rate(ak4114_t *ak4114);
-int snd_ak4114_check_rate_and_errors(ak4114_t *ak4114, unsigned int flags);
+		      const unsigned char pgm[6], const unsigned char txcsb[5],
+		      void *private_data, struct ak4114 **r_ak4114);
+void snd_ak4114_reg_write(struct ak4114 *ak4114, unsigned char reg, unsigned char mask, unsigned char val);
+void snd_ak4114_reinit(struct ak4114 *ak4114);
+int snd_ak4114_build(struct ak4114 *ak4114,
+		     struct snd_pcm_substream *playback_substream,
+                     struct snd_pcm_substream *capture_substream);
+int snd_ak4114_external_rate(struct ak4114 *ak4114);
+int snd_ak4114_check_rate_and_errors(struct ak4114 *ak4114, unsigned int flags);
+
+#ifdef CONFIG_PM
+void snd_ak4114_suspend(struct ak4114 *chip);
+void snd_ak4114_resume(struct ak4114 *chip);
+#else
+static inline void snd_ak4114_suspend(struct ak4114 *chip) {}
+static inline void snd_ak4114_resume(struct ak4114 *chip) {}
+#endif
 
 #endif /* __SOUND_AK4114_H */
 

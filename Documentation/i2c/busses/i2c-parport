@@ -1,6 +1,6 @@
 Kernel driver i2c-parport
 
-Author: Jean Delvare <khali@linux-fr.org> 
+Author: Jean Delvare <jdelvare@suse.de>
 
 This is a unified driver for several i2c-over-parallel-port adapters,
 such as the ones made by Philips, Velleman or ELV. This driver is
@@ -12,16 +12,26 @@ meant as a replacement for the older, individual drivers:
                       teletext adapters)
 
 It currently supports the following devices:
- * Philips adapter
- * home brew teletext adapter
- * Velleman K8000 adapter
- * ELV adapter
- * Analog Devices evaluation boards (ADM1025, ADM1030, ADM1031, ADM1032)
+ * (type=0) Philips adapter
+ * (type=1) home brew teletext adapter
+ * (type=2) Velleman K8000 adapter
+ * (type=3) ELV adapter
+ * (type=4) Analog Devices ADM1032 evaluation board
+ * (type=5) Analog Devices evaluation boards: ADM1025, ADM1030, ADM1031
+ * (type=6) Barco LPT->DVI (K5800236) adapter
+ * (type=7) One For All JP1 parallel port adapter
+ * (type=8) VCT-jig
 
 These devices use different pinout configurations, so you have to tell
 the driver what you have, using the type module parameter. There is no
 way to autodetect the devices. Support for different pinout configurations
 can be easily added when needed.
+
+Earlier kernels defaulted to type=0 (Philips).  But now, if the type
+parameter is missing, the driver will simply fail to initialize.
+
+SMBus alert support is available on adapters which have this line properly
+connected to the parallel port's interrupt pin.
 
 
 Building your own adapter
@@ -152,3 +162,17 @@ many more, using /dev/velleman.
   http://home.wanadoo.nl/hihihi/libk8005.htm
   http://struyve.mine.nu:8080/index.php?block=k8000
   http://sourceforge.net/projects/libk8005/
+
+
+One For All JP1 parallel port adapter
+-------------------------------------
+
+The JP1 project revolves around a set of remote controls which expose
+the I2C bus their internal configuration EEPROM lives on via a 6 pin
+jumper in the battery compartment. More details can be found at:
+
+http://www.hifi-remote.com/jp1/
+
+Details of the simple parallel port hardware can be found at:
+
+http://www.hifi-remote.com/jp1/hardware.shtml

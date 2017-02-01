@@ -1,5 +1,5 @@
 /*
- * sound/sys_timer.c
+ * sound/oss/sys_timer.c
  *
  * The default timer for the Level 2 sequencer interface
  * Uses the (1/HZ sec) timer of kernel.
@@ -19,7 +19,7 @@
 #include "sound_config.h"
 
 static volatile int opened, tmr_running;
-static volatile time_t tmr_offs, tmr_ctr;
+static volatile unsigned int tmr_offs, tmr_ctr;
 static volatile unsigned long ticks_offs;
 static volatile int curr_tempo, curr_timebase;
 static volatile unsigned long curr_ticks;
@@ -28,8 +28,7 @@ static unsigned long prev_event_time;
 
 static void     poll_def_tmr(unsigned long dummy);
 static DEFINE_SPINLOCK(lock);
-
-static struct timer_list def_tmr = TIMER_INITIALIZER(poll_def_tmr, 0, 0);
+static DEFINE_TIMER(def_tmr, poll_def_tmr, 0, 0);
 
 static unsigned long
 tmr2ticks(int tmr_value)
@@ -51,29 +50,24 @@ tmr2ticks(int tmr_value)
 static void
 poll_def_tmr(unsigned long dummy)
 {
+	if (!opened)
+		return;
+	def_tmr.expires = (1) + jiffies;
+	add_timer(&def_tmr);
 
-	if (opened)
-	  {
+	if (!tmr_running)
+		return;
 
-		  {
-			  def_tmr.expires = (1) + jiffies;
-			  add_timer(&def_tmr);
-		  };
+	spin_lock(&lock);
+	tmr_ctr++;
+	curr_ticks = ticks_offs + tmr2ticks(tmr_ctr);
 
-		  if (tmr_running)
-		    {
-				spin_lock(&lock);
-			    tmr_ctr++;
-			    curr_ticks = ticks_offs + tmr2ticks(tmr_ctr);
+	if (curr_ticks >= next_event_time) {
+		next_event_time = (unsigned long) -1;
+		sequencer_timer(0);
+	}
 
-			    if (curr_ticks >= next_event_time)
-			      {
-				      next_event_time = (unsigned long) -1;
-				      sequencer_timer(0);
-			      }
-				spin_unlock(&lock);
-		    }
-	  }
+	spin_unlock(&lock);
 }
 
 static void
@@ -101,13 +95,10 @@ def_tmr_open(int dev, int mode)
 	curr_tempo = 60;
 	curr_timebase = 100;
 	opened = 1;
-
-	;
-
 	{
 		def_tmr.expires = (1) + jiffies;
 		add_timer(&def_tmr);
-	};
+	}
 
 	return 0;
 }

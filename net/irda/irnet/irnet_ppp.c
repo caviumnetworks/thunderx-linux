@@ -13,11 +13,13 @@
  *	2) as a control channel (write commands, read events)
  */
 
+#include <linux/sched.h>
+#include <linux/slab.h>
 #include "irnet_ppp.h"		/* Private header */
 /* Please put other headers in irnet.h - Thanks */
 
 /* Generic PPP callbacks (to call us) */
-static struct ppp_channel_ops irnet_ppp_ops = {
+static const struct ppp_channel_ops irnet_ppp_ops = {
 	.start_xmit = ppp_irnet_send,
 	.ioctl = ppp_irnet_ioctl
 };
@@ -74,9 +76,8 @@ irnet_ctrl_write(irnet_socket *	ap,
       /* Look at the next command */
       start = next;
 
-      /* Scrap whitespaces before the command */
-      while(isspace(*start))
-	start++;
+	/* Scrap whitespaces before the command */
+	start = skip_spaces(start);
 
       /* ',' is our command separator */
       next = strchr(start, ',');
@@ -93,7 +94,7 @@ irnet_ctrl_write(irnet_socket *	ap,
 
       /* Check if we recognised one of the known command
        * We can't use "switch" with strings, so hack with "continue" */
-      
+
       /* First command : name -> Requested IrDA nickname */
       if(!strncmp(start, "name", 4))
 	{
@@ -103,6 +104,9 @@ irnet_ctrl_write(irnet_socket *	ap,
 	      /* Strip out trailing whitespaces */
 	      while(isspace(start[length - 1]))
 		length--;
+
+	      DABORT(length < 5 || length > NICKNAME_MAX_LEN + 5,
+		     -EINVAL, CTRL_ERROR, "Invalid nickname.\n");
 
 	      /* Copy the name for later reuse */
 	      memcpy(ap->rname, start + 5, length - 5);
@@ -131,8 +135,7 @@ irnet_ctrl_write(irnet_socket *	ap,
 	      char *	endp;
 
 	      /* Scrap whitespaces before the command */
-	      while(isspace(*begp))
-		begp++;
+	      begp = skip_spaces(begp);
 
 	      /* Convert argument to a number (last arg is the base) */
 	      addr = simple_strtoul(begp, &endp, 16);
@@ -165,7 +168,7 @@ irnet_ctrl_write(irnet_socket *	ap,
     }
 
   /* Success : we have parsed all commands successfully */
-  return(count);
+  return count;
 }
 
 #ifdef INITIAL_DISCOVERY
@@ -211,8 +214,7 @@ irnet_get_discovery_log(irnet_socket *	ap)
  * After reading :    discoveries = NULL ; disco_index = Y ; disco_number = -1
  */
 static inline int
-irnet_read_discovery_log(irnet_socket *	ap,
-			 char *		event)
+irnet_read_discovery_log(irnet_socket *ap, char *event, int buf_size)
 {
   int		done_event = 0;
 
@@ -234,12 +236,13 @@ irnet_read_discovery_log(irnet_socket *	ap,
   if(ap->disco_index < ap->disco_number)
     {
       /* Write an event */
-      sprintf(event, "Found %08x (%s) behind %08x {hints %02X-%02X}\n",
-	      ap->discoveries[ap->disco_index].daddr,
-	      ap->discoveries[ap->disco_index].info,
-	      ap->discoveries[ap->disco_index].saddr,
-	      ap->discoveries[ap->disco_index].hints[0],
-	      ap->discoveries[ap->disco_index].hints[1]);
+      snprintf(event, buf_size,
+	       "Found %08x (%s) behind %08x {hints %02X-%02X}\n",
+	       ap->discoveries[ap->disco_index].daddr,
+	       ap->discoveries[ap->disco_index].info,
+	       ap->discoveries[ap->disco_index].saddr,
+	       ap->discoveries[ap->disco_index].hints[0],
+	       ap->discoveries[ap->disco_index].hints[1]);
       DEBUG(CTRL_INFO, "Writing discovery %d : %s\n",
 	    ap->disco_index, ap->discoveries[ap->disco_index].info);
 
@@ -279,33 +282,30 @@ irnet_ctrl_read(irnet_socket *	ap,
 		size_t		count)
 {
   DECLARE_WAITQUEUE(wait, current);
-  char		event[64];	/* Max event is 61 char */
+  char		event[75];
   ssize_t	ret = 0;
 
   DENTER(CTRL_TRACE, "(ap=0x%p, count=%Zd)\n", ap, count);
 
-  /* Check if we can write an event out in one go */
-  DABORT(count < sizeof(event), -EOVERFLOW, CTRL_ERROR, "Buffer to small.\n");
-
 #ifdef INITIAL_DISCOVERY
   /* Check if we have read the log */
-  if(irnet_read_discovery_log(ap, event))
+  if (irnet_read_discovery_log(ap, event, sizeof(event)))
     {
-      /* We have an event !!! Copy it to the user */
-      if(copy_to_user(buf, event, strlen(event)))
+      count = min(strlen(event), count);
+      if (copy_to_user(buf, event, count))
 	{
 	  DERROR(CTRL_ERROR, "Invalid user space pointer.\n");
 	  return -EFAULT;
 	}
 
       DEXIT(CTRL_TRACE, "\n");
-      return(strlen(event));
+      return count;
     }
 #endif /* INITIAL_DISCOVERY */
 
   /* Put ourselves on the wait queue to be woken up */
   add_wait_queue(&irnet_events.rwait, &wait);
-  current->state = TASK_INTERRUPTIBLE;
+  set_current_state(TASK_INTERRUPTIBLE);
   for(;;)
     {
       /* If there is unread events */
@@ -321,7 +321,7 @@ irnet_ctrl_read(irnet_socket *	ap,
       /* Yield and wait to be woken up */
       schedule();
     }
-  current->state = TASK_RUNNING;
+  __set_current_state(TASK_RUNNING);
   remove_wait_queue(&irnet_events.rwait, &wait);
 
   /* Did we got it ? */
@@ -336,79 +336,81 @@ irnet_ctrl_read(irnet_socket *	ap,
   switch(irnet_events.log[ap->event_index].event)
     {
     case IRNET_DISCOVER:
-      sprintf(event, "Discovered %08x (%s) behind %08x {hints %02X-%02X}\n",
-	      irnet_events.log[ap->event_index].daddr,
-	      irnet_events.log[ap->event_index].name,
-	      irnet_events.log[ap->event_index].saddr,
-	      irnet_events.log[ap->event_index].hints.byte[0],
-	      irnet_events.log[ap->event_index].hints.byte[1]);
+      snprintf(event, sizeof(event),
+	       "Discovered %08x (%s) behind %08x {hints %02X-%02X}\n",
+	       irnet_events.log[ap->event_index].daddr,
+	       irnet_events.log[ap->event_index].name,
+	       irnet_events.log[ap->event_index].saddr,
+	       irnet_events.log[ap->event_index].hints.byte[0],
+	       irnet_events.log[ap->event_index].hints.byte[1]);
       break;
     case IRNET_EXPIRE:
-      sprintf(event, "Expired %08x (%s) behind %08x {hints %02X-%02X}\n",
-	      irnet_events.log[ap->event_index].daddr,
-	      irnet_events.log[ap->event_index].name,
-	      irnet_events.log[ap->event_index].saddr,
-	      irnet_events.log[ap->event_index].hints.byte[0],
-	      irnet_events.log[ap->event_index].hints.byte[1]);
+      snprintf(event, sizeof(event),
+	       "Expired %08x (%s) behind %08x {hints %02X-%02X}\n",
+	       irnet_events.log[ap->event_index].daddr,
+	       irnet_events.log[ap->event_index].name,
+	       irnet_events.log[ap->event_index].saddr,
+	       irnet_events.log[ap->event_index].hints.byte[0],
+	       irnet_events.log[ap->event_index].hints.byte[1]);
       break;
     case IRNET_CONNECT_TO:
-      sprintf(event, "Connected to %08x (%s) on ppp%d\n",
-	      irnet_events.log[ap->event_index].daddr,
-	      irnet_events.log[ap->event_index].name,
-	      irnet_events.log[ap->event_index].unit);
+      snprintf(event, sizeof(event), "Connected to %08x (%s) on ppp%d\n",
+	       irnet_events.log[ap->event_index].daddr,
+	       irnet_events.log[ap->event_index].name,
+	       irnet_events.log[ap->event_index].unit);
       break;
     case IRNET_CONNECT_FROM:
-      sprintf(event, "Connection from %08x (%s) on ppp%d\n",
-	      irnet_events.log[ap->event_index].daddr,
-	      irnet_events.log[ap->event_index].name,
-	      irnet_events.log[ap->event_index].unit);
+      snprintf(event, sizeof(event), "Connection from %08x (%s) on ppp%d\n",
+	       irnet_events.log[ap->event_index].daddr,
+	       irnet_events.log[ap->event_index].name,
+	       irnet_events.log[ap->event_index].unit);
       break;
     case IRNET_REQUEST_FROM:
-      sprintf(event, "Request from %08x (%s) behind %08x\n",
-	      irnet_events.log[ap->event_index].daddr,
-	      irnet_events.log[ap->event_index].name,
-	      irnet_events.log[ap->event_index].saddr);
+      snprintf(event, sizeof(event), "Request from %08x (%s) behind %08x\n",
+	       irnet_events.log[ap->event_index].daddr,
+	       irnet_events.log[ap->event_index].name,
+	       irnet_events.log[ap->event_index].saddr);
       break;
     case IRNET_NOANSWER_FROM:
-      sprintf(event, "No-answer from %08x (%s) on ppp%d\n",
-	      irnet_events.log[ap->event_index].daddr,
-	      irnet_events.log[ap->event_index].name,
-	      irnet_events.log[ap->event_index].unit);
+      snprintf(event, sizeof(event), "No-answer from %08x (%s) on ppp%d\n",
+	       irnet_events.log[ap->event_index].daddr,
+	       irnet_events.log[ap->event_index].name,
+	       irnet_events.log[ap->event_index].unit);
       break;
     case IRNET_BLOCKED_LINK:
-      sprintf(event, "Blocked link with %08x (%s) on ppp%d\n",
-	      irnet_events.log[ap->event_index].daddr,
-	      irnet_events.log[ap->event_index].name,
-	      irnet_events.log[ap->event_index].unit);
+      snprintf(event, sizeof(event), "Blocked link with %08x (%s) on ppp%d\n",
+	       irnet_events.log[ap->event_index].daddr,
+	       irnet_events.log[ap->event_index].name,
+	       irnet_events.log[ap->event_index].unit);
       break;
     case IRNET_DISCONNECT_FROM:
-      sprintf(event, "Disconnection from %08x (%s) on ppp%d\n",
-	      irnet_events.log[ap->event_index].daddr,
-	      irnet_events.log[ap->event_index].name,
-	      irnet_events.log[ap->event_index].unit);
+      snprintf(event, sizeof(event), "Disconnection from %08x (%s) on ppp%d\n",
+	       irnet_events.log[ap->event_index].daddr,
+	       irnet_events.log[ap->event_index].name,
+	       irnet_events.log[ap->event_index].unit);
       break;
     case IRNET_DISCONNECT_TO:
-      sprintf(event, "Disconnected to %08x (%s)\n",
-	      irnet_events.log[ap->event_index].daddr,
-	      irnet_events.log[ap->event_index].name);
+      snprintf(event, sizeof(event), "Disconnected to %08x (%s)\n",
+	       irnet_events.log[ap->event_index].daddr,
+	       irnet_events.log[ap->event_index].name);
       break;
     default:
-      sprintf(event, "Bug\n");
+      snprintf(event, sizeof(event), "Bug\n");
     }
   /* Increment our event index */
   ap->event_index = (ap->event_index + 1) % IRNET_MAX_EVENTS;
 
   DEBUG(CTRL_INFO, "Event is :%s", event);
 
-  /* Copy it to the user */
-  if(copy_to_user(buf, event, strlen(event)))
+  count = min(strlen(event), count);
+  if (copy_to_user(buf, event, count))
     {
       DERROR(CTRL_ERROR, "Invalid user space pointer.\n");
       return -EFAULT;
     }
 
   DEXIT(CTRL_TRACE, "\n");
-  return(strlen(event));
+  return count;
 }
 
 /*------------------------------------------------------------------*/
@@ -476,11 +478,10 @@ dev_irnet_open(struct inode *	inode,
 #endif /* SECURE_DEVIRNET */
 
   /* Allocate a private structure for this IrNET instance */
-  ap = kmalloc(sizeof(*ap), GFP_KERNEL);
+  ap = kzalloc(sizeof(*ap), GFP_KERNEL);
   DABORT(ap == NULL, -ENOMEM, FS_ERROR, "Can't allocate struct irnet...\n");
 
   /* initialize the irnet structure */
-  memset(ap, 0, sizeof(*ap));
   ap->file = file;
 
   /* PPP channel setup */
@@ -501,16 +502,20 @@ dev_irnet_open(struct inode *	inode,
     {
       DERROR(FS_ERROR, "Can't setup IrDA link...\n");
       kfree(ap);
+
       return err;
     }
 
   /* For the control channel */
   ap->event_index = irnet_events.index;	/* Cancel all past events */
 
+  mutex_init(&ap->lock);
+
   /* Put our stuff where we will be able to find it later */
   file->private_data = ap;
 
   DEXIT(FS_TRACE, " - ap=0x%p\n", ap);
+
   return 0;
 }
 
@@ -524,7 +529,7 @@ static int
 dev_irnet_close(struct inode *	inode,
 		struct file *	file)
 {
-  irnet_socket *	ap = (struct irnet_socket *) file->private_data;
+  irnet_socket *	ap = file->private_data;
 
   DENTER(FS_TRACE, "(file=0x%p, ap=0x%p)\n",
 	 file, ap);
@@ -561,7 +566,7 @@ dev_irnet_write(struct file *	file,
 		size_t		count,
 		loff_t *	ppos)
 {
-  irnet_socket *	ap = (struct irnet_socket *) file->private_data;
+  irnet_socket *	ap = file->private_data;
 
   DPASS(FS_TRACE, "(file=0x%p, ap=0x%p, count=%Zd)\n",
 	file, ap, count);
@@ -585,7 +590,7 @@ dev_irnet_read(struct file *	file,
 	       size_t		count,
 	       loff_t *		ppos)
 {
-  irnet_socket *	ap = (struct irnet_socket *) file->private_data;
+  irnet_socket *	ap = file->private_data;
 
   DPASS(FS_TRACE, "(file=0x%p, ap=0x%p, count=%Zd)\n",
 	file, ap, count);
@@ -606,7 +611,7 @@ static unsigned int
 dev_irnet_poll(struct file *	file,
 	       poll_table *	wait)
 {
-  irnet_socket *	ap = (struct irnet_socket *) file->private_data;
+  irnet_socket *	ap = file->private_data;
   unsigned int		mask;
 
   DENTER(FS_TRACE, "(file=0x%p, ap=0x%p)\n",
@@ -620,7 +625,7 @@ dev_irnet_poll(struct file *	file,
     mask |= irnet_ctrl_poll(ap, file, wait);
 
   DEXIT(FS_TRACE, " - mask=0x%X\n", mask);
-  return(mask);
+  return mask;
 }
 
 /*------------------------------------------------------------------*/
@@ -629,13 +634,13 @@ dev_irnet_poll(struct file *	file,
  * This is the way pppd configure us and control us while the PPP
  * instance is active.
  */
-static int
-dev_irnet_ioctl(struct inode *	inode,
+static long
+dev_irnet_ioctl(
 		struct file *	file,
 		unsigned int	cmd,
 		unsigned long	arg)
 {
-  irnet_socket *	ap = (struct irnet_socket *) file->private_data;
+  irnet_socket *	ap = file->private_data;
   int			err;
   int			val;
   void __user *argp = (void __user *)arg;
@@ -660,7 +665,10 @@ dev_irnet_ioctl(struct inode *	inode,
       if((val == N_SYNC_PPP) || (val == N_PPP))
 	{
 	  DEBUG(FS_INFO, "Entering PPP discipline.\n");
-	  /* PPP channel setup (ap->chan in configued in dev_irnet_open())*/
+	  /* PPP channel setup (ap->chan in configured in dev_irnet_open())*/
+	  if (mutex_lock_interruptible(&ap->lock))
+		  return -EINTR;
+
 	  err = ppp_register_channel(&ap->chan);
 	  if(err == 0)
 	    {
@@ -673,12 +681,17 @@ dev_irnet_ioctl(struct inode *	inode,
 	    }
 	  else
 	    DERROR(FS_ERROR, "Can't setup PPP channel...\n");
+
+          mutex_unlock(&ap->lock);
 	}
       else
 	{
 	  /* In theory, should be N_TTY */
 	  DEBUG(FS_INFO, "Exiting PPP discipline.\n");
 	  /* Disconnect from the generic PPP layer */
+	  if (mutex_lock_interruptible(&ap->lock))
+		  return -EINTR;
+
 	  if(ap->ppp_open)
 	    {
 	      ap->ppp_open = 0;
@@ -687,25 +700,31 @@ dev_irnet_ioctl(struct inode *	inode,
 	  else
 	    DERROR(FS_ERROR, "Channel not registered !\n");
 	  err = 0;
+
+	  mutex_unlock(&ap->lock);
 	}
       break;
 
       /* Query PPP channel and unit number */
     case PPPIOCGCHAN:
-      if(!ap->ppp_open)
-	break;
-      if(put_user(ppp_channel_index(&ap->chan), (int __user *)argp))
-	break;
-      DEBUG(FS_INFO, "Query channel.\n");
-      err = 0;
+      if (mutex_lock_interruptible(&ap->lock))
+	      return -EINTR;
+
+      if(ap->ppp_open && !put_user(ppp_channel_index(&ap->chan),
+						(int __user *)argp))
+	err = 0;
+
+      mutex_unlock(&ap->lock);
       break;
     case PPPIOCGUNIT:
-      if(!ap->ppp_open)
-	break;
-      if(put_user(ppp_unit_number(&ap->chan), (int __user *)argp))
-	break;
-      DEBUG(FS_INFO, "Query unit number.\n");
-      err = 0;
+      if (mutex_lock_interruptible(&ap->lock))
+	      return -EINTR;
+
+      if(ap->ppp_open && !put_user(ppp_unit_number(&ap->chan),
+						(int __user *)argp))
+        err = 0;
+
+      mutex_unlock(&ap->lock);
       break;
 
       /* All these ioctls can be passed both directly and from ppp_generic,
@@ -724,28 +743,52 @@ dev_irnet_ioctl(struct inode *	inode,
       DEBUG(FS_INFO, "Standard PPP ioctl.\n");
       if(!capable(CAP_NET_ADMIN))
 	err = -EPERM;
-      else
+      else {
+	if (mutex_lock_interruptible(&ap->lock))
+	      return -EINTR;
+
 	err = ppp_irnet_ioctl(&ap->chan, cmd, arg);
+
+	mutex_unlock(&ap->lock);
+      }
       break;
 
       /* TTY IOCTLs : Pretend that we are a tty, to keep pppd happy */
       /* Get termios */
     case TCGETS:
       DEBUG(FS_INFO, "Get termios.\n");
-      if(kernel_termios_to_user_termios((struct termios __user *)argp, &ap->termios))
-	break;
-      err = 0;
+      if (mutex_lock_interruptible(&ap->lock))
+	      return -EINTR;
+
+#ifndef TCGETS2
+      if(!kernel_termios_to_user_termios((struct termios __user *)argp, &ap->termios))
+	err = 0;
+#else
+      if(kernel_termios_to_user_termios_1((struct termios __user *)argp, &ap->termios))
+	err = 0;
+#endif
+
+      mutex_unlock(&ap->lock);
       break;
       /* Set termios */
     case TCSETSF:
       DEBUG(FS_INFO, "Set termios.\n");
-      if(user_termios_to_kernel_termios(&ap->termios, (struct termios __user *)argp))
-	break;
-      err = 0;
+      if (mutex_lock_interruptible(&ap->lock))
+	      return -EINTR;
+
+#ifndef TCGETS2
+      if(!user_termios_to_kernel_termios(&ap->termios, (struct termios __user *)argp))
+	err = 0;
+#else
+      if(!user_termios_to_kernel_termios_1(&ap->termios, (struct termios __user *)argp))
+	err = 0;
+#endif
+
+      mutex_unlock(&ap->lock);
       break;
 
       /* Set DTR/RTS */
-    case TIOCMBIS: 
+    case TIOCMBIS:
     case TIOCMBIC:
       /* Set exclusive/non-exclusive mode */
     case TIOCEXCL:
@@ -764,7 +807,10 @@ dev_irnet_ioctl(struct inode *	inode,
        * We should also worry that we don't accept junk here and that
        * we get rid of our own buffers */
 #ifdef FLUSH_TO_PPP
+      if (mutex_lock_interruptible(&ap->lock))
+	      return -EINTR;
       ppp_output_wakeup(&ap->chan);
+      mutex_unlock(&ap->lock);
 #endif /* FLUSH_TO_PPP */
       err = 0;
       break;
@@ -779,7 +825,7 @@ dev_irnet_ioctl(struct inode *	inode,
 
     default:
       DERROR(FS_ERROR, "Unsupported ioctl (0x%X)\n", cmd);
-      err = -ENOIOCTLCMD;
+      err = -ENOTTY;
     }
 
   DEXIT(FS_TRACE, " - err = 0x%X\n", err);
@@ -942,7 +988,7 @@ ppp_irnet_send(struct ppp_channel *	chan,
   ret = irttp_data_request(self->tsap, skb);
   if(ret < 0)
     {
-      /*   
+      /*
        * > IrTTPs tx queue is full, so we just have to
        * > drop the frame! You might think that we should
        * > just return -1 and don't deallocate the frame,
@@ -950,7 +996,7 @@ ppp_irnet_send(struct ppp_channel *	chan,
        * > we have replaced the original skb with a new
        * > one with larger headroom, and that would really
        * > confuse do_dev_queue_xmit() in dev.c! I have
-       * > tried :-) DB 
+       * > tried :-) DB
        * Correction : we verify the flow control above (self->tx_flow),
        * so we come here only if IrTTP doesn't like the packet (empty,
        * too large, IrTTP not connected). In those rare cases, it's ok
@@ -1107,7 +1153,7 @@ ppp_irnet_cleanup(void)
 /*
  * Module main entry point
  */
-int __init
+static int __init
 irnet_init(void)
 {
   int err;
@@ -1137,6 +1183,6 @@ irnet_cleanup(void)
 module_init(irnet_init);
 module_exit(irnet_cleanup);
 MODULE_AUTHOR("Jean Tourrilhes <jt@hpl.hp.com>");
-MODULE_DESCRIPTION("IrNET : Synchronous PPP over IrDA"); 
+MODULE_DESCRIPTION("IrNET : Synchronous PPP over IrDA");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_CHARDEV(10, 187);

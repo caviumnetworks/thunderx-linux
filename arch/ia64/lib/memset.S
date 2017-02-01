@@ -18,6 +18,7 @@
    to get peak speed when value = 0.  */
 
 #include <asm/asmmacro.h>
+#include <asm/export.h>
 #undef ret
 
 #define dest		in0
@@ -57,10 +58,10 @@ GLOBAL_ENTRY(memset)
 { .mmi
 	.prologue
 	alloc	tmp = ar.pfs, 3, 0, 0, 0
-	.body
 	lfetch.nt1 [dest]			//
 	.save   ar.lc, save_lc
 	mov.i	save_lc = ar.lc
+	.body
 } { .mmi
 	mov	ret0 = dest			// return value
 	cmp.ne	p_nz, p_zr = value, r0		// use stf.spill if value is zero
@@ -360,3 +361,4 @@ GLOBAL_ENTRY(memset)
 	br.ret.sptk.many rp
 }
 END(memset)
+EXPORT_SYMBOL(memset)

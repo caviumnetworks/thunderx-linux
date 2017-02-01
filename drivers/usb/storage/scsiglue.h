@@ -1,7 +1,6 @@
-/* Driver for USB Mass Storage compliant devices
+/*
+ * Driver for USB Mass Storage compliant devices
  * SCSI Connecting Glue Header File
- *
- * $Id: scsiglue.h,v 1.4 2000/08/25 00:13:51 mdharm Exp $
  *
  * Current development and maintenance by:
  *   (c) 1999, 2000 Matthew Dharm (mdharm-usb@one-eyed-alien.net)
@@ -42,8 +41,10 @@
 #define _SCSIGLUE_H_
 
 extern void usb_stor_report_device_reset(struct us_data *us);
+extern void usb_stor_report_bus_reset(struct us_data *us);
+extern void usb_stor_host_template_init(struct scsi_host_template *sht,
+					const char *name, struct module *owner);
 
 extern unsigned char usb_stor_sense_invalidCDB[18];
-extern struct scsi_host_template usb_stor_host_template;
 
 #endif

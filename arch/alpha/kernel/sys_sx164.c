@@ -17,7 +17,6 @@
 #include <linux/bitops.h>
 
 #include <asm/ptrace.h>
-#include <asm/system.h>
 #include <asm/dma.h>
 #include <asm/irq.h>
 #include <asm/mmu_context.h>
@@ -26,6 +25,7 @@
 #include <asm/core_cia.h>
 #include <asm/hwrpb.h>
 #include <asm/tlbflush.h>
+#include <asm/special_insns.h>
 
 #include "proto.h"
 #include "irq_impl.h"
@@ -95,7 +95,7 @@ sx164_init_irq(void)
  */
 
 static int __init
-sx164_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+sx164_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	static char irq_tab[5][5] __initdata = {
 		/*INT    INTA   INTB   INTC   INTD */
@@ -132,7 +132,7 @@ sx164_init_arch(void)
 
 	if (amask(AMASK_MAX) != 0
 	    && alpha_using_srm
-	    && (cpu->pal_revision & 0xffff) == 0x117) {
+	    && (cpu->pal_revision & 0xffff) <= 0x117) {
 		__asm__ __volatile__(
 		"lda	$16,8($31)\n"
 		"call_pal 9\n"		/* Allow PALRES insns in kernel mode */

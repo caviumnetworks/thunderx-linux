@@ -1,6 +1,6 @@
 /*
  * NET3:	Fibre Channel device handling subroutines
- * 
+ *
  *		This program is free software; you can redistribute it and/or
  *		modify it under the terms of the GNU General Public License
  *		as published by the Free Software Foundation; either version
@@ -10,12 +10,9 @@
  *		v 1.0 03/22/99
  */
 
-#include <linux/config.h>
 #include <asm/uaccess.h>
-#include <asm/system.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
-#include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/mm.h>
 #include <linux/socket.h>
@@ -29,21 +26,22 @@
 #include <linux/net.h>
 #include <linux/proc_fs.h>
 #include <linux/init.h>
+#include <linux/export.h>
 #include <net/arp.h>
 
 /*
- *	Put the headers on a Fibre Channel packet. 
+ *	Put the headers on a Fibre Channel packet.
  */
- 
+
 static int fc_header(struct sk_buff *skb, struct net_device *dev,
 		     unsigned short type,
-		     void *daddr, void *saddr, unsigned len) 
+		     const void *daddr, const void *saddr, unsigned int len)
 {
 	struct fch_hdr *fch;
 	int hdr_len;
 
-	/* 
-	 * Add the 802.2 SNAP header if IP as the IPv4 code calls  
+	/*
+	 * Add the 802.2 SNAP header if IP as the IPv4 code calls
 	 * dev->hard_header directly.
 	 */
 	if (type == ETH_P_IP || type == ETH_P_ARP)
@@ -61,7 +59,7 @@ static int fc_header(struct sk_buff *skb, struct net_device *dev,
 	else
 	{
 		hdr_len = sizeof(struct fch_hdr);
-		fch = (struct fch_hdr *)skb_push(skb, hdr_len);	
+		fch = (struct fch_hdr *)skb_push(skb, hdr_len);
 	}
 
 	if(saddr)
@@ -69,39 +67,21 @@ static int fc_header(struct sk_buff *skb, struct net_device *dev,
 	else
 		memcpy(fch->saddr,dev->dev_addr,dev->addr_len);
 
-	if(daddr) 
+	if(daddr)
 	{
 		memcpy(fch->daddr,daddr,dev->addr_len);
-		return(hdr_len);
+		return hdr_len;
 	}
 	return -hdr_len;
 }
-	
-/*
- *	A neighbour discovery of some species (eg arp) has completed. We
- *	can now send the packet.
- */
- 
-static int fc_rebuild_header(struct sk_buff *skb) 
-{
-	struct fch_hdr *fch=(struct fch_hdr *)skb->data;
-	struct fcllc *fcllc=(struct fcllc *)(skb->data+sizeof(struct fch_hdr));
-	if(fcllc->ethertype != htons(ETH_P_IP)) {
-		printk("fc_rebuild_header: Don't know how to resolve type %04X addresses ?\n",(unsigned int)htons(fcllc->ethertype));
-		return 0;
-	}
-#ifdef CONFIG_INET
-	return arp_find(fch->daddr, skb);
-#else
-	return 0;
-#endif
-}
+
+static const struct header_ops fc_header_ops = {
+	.create	 = fc_header,
+};
 
 static void fc_setup(struct net_device *dev)
 {
-	dev->hard_header	= fc_header;
-	dev->rebuild_header	= fc_rebuild_header;
-                
+	dev->header_ops		= &fc_header_ops;
 	dev->type		= ARPHRD_IEEE802;
 	dev->hard_header_len	= FC_HLEN;
 	dev->mtu		= 2024;
@@ -125,6 +105,6 @@ static void fc_setup(struct net_device *dev)
  */
 struct net_device *alloc_fcdev(int sizeof_priv)
 {
-	return alloc_netdev(sizeof_priv, "fc%d", fc_setup);
+	return alloc_netdev(sizeof_priv, "fc%d", NET_NAME_UNKNOWN, fc_setup);
 }
 EXPORT_SYMBOL(alloc_fcdev);

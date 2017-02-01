@@ -44,15 +44,15 @@ static inline pud_t * pud_offset(pgd_t * pgd, unsigned long address)
 #define __pud(x)				((pud_t) { __pgd(x) } )
 
 #define pgd_page(pgd)				(pud_page((pud_t){ pgd }))
-#define pgd_page_kernel(pgd)			(pud_page_kernel((pud_t){ pgd }))
+#define pgd_page_vaddr(pgd)			(pud_page_vaddr((pud_t){ pgd }))
 
 /*
  * allocating and freeing a pud is trivial: the 1-entry pud is
  * inside the pgd, so has no extra memory associated with it.
  */
 #define pud_alloc_one(mm, address)		NULL
-#define pud_free(x)				do { } while (0)
-#define __pud_free_tlb(tlb, x)			do { } while (0)
+#define pud_free(mm, x)				do { } while (0)
+#define __pud_free_tlb(tlb, x, a)		do { } while (0)
 
 #undef  pud_addr_end
 #define pud_addr_end(addr, end)			(end)

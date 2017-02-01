@@ -80,7 +80,7 @@
      struct member has a short description which is marked with an [XXX] identifier.
      The following chapters explain the meaning of those identifiers.
      </para>
-     <sect1>   
+     <sect1 id="Function_identifiers_XXX">
 	<title>Function identifiers [XXX]</title>
      	<para>
 	The functions are marked with [XXX] identifiers in the short
@@ -91,7 +91,7 @@
 		<listitem><para>
 	  	[MTD Interface]</para><para>
 		These functions provide the interface to the MTD kernel API. 
-		They are not replacable and provide functionality
+		They are not replaceable and provide functionality
 		which is complete hardware independent.
 		</para></listitem>
 		<listitem><para>
@@ -100,22 +100,22 @@
 		</para></listitem>
 		<listitem><para>
 	  	[GENERIC]</para><para>
-		Generic functions are not replacable and provide functionality
+		Generic functions are not replaceable and provide functionality
 		which is complete hardware independent.
 		</para></listitem>
 		<listitem><para>
 	  	[DEFAULT]</para><para>
 		Default functions provide hardware related functionality which is suitable
 		for most of the implementations. These functions can be replaced by the
-		board driver if neccecary. Those functions are called via pointers in the
+		board driver if necessary. Those functions are called via pointers in the
 		NAND chip description structure. The board driver can set the functions which
-		should be replaced by board dependend functions before calling nand_scan().
+		should be replaced by board dependent functions before calling nand_scan().
 		If the function pointer is NULL on entry to nand_scan() then the pointer
 		is set to the default function which is suitable for the detected chip type.
 		</para></listitem>
 	</itemizedlist>
      </sect1>
-     <sect1>   
+     <sect1 id="Struct_member_identifiers_XXX">
 	<title>Struct member identifiers [XXX]</title>
      	<para>
 	The struct members are marked with [XXX] identifiers in the 
@@ -133,7 +133,7 @@
 	  	[REPLACEABLE]</para><para>
 		Replaceable members hold hardware related functions which can be 
 		provided by the board driver. The board driver can set the functions which
-		should be replaced by board dependend functions before calling nand_scan().
+		should be replaced by board dependent functions before calling nand_scan().
 		If the function pointer is NULL on entry to nand_scan() then the pointer
 		is set to the default function which is suitable for the detected chip type.
 		</para></listitem>
@@ -156,42 +156,42 @@
      	<title>Basic board driver</title>
 	<para>
 		For most boards it will be sufficient to provide just the
-		basic functions and fill out some really board dependend
+		basic functions and fill out some really board dependent
 		members in the nand chip description structure.
-		See drivers/mtd/nand/skeleton for reference.
 	</para>
-	<sect1>
+	<sect1 id="Basic_defines">
 		<title>Basic defines</title>
 		<para>
-			At least you have to provide a mtd structure and
-			a storage for the ioremap'ed chip address.
-			You can allocate the mtd structure using kmalloc
-			or you can allocate it statically.
-			In case of static allocation you have to allocate
-			a nand_chip structure too.
+			At least you have to provide a nand_chip structure
+			and a storage for the ioremap'ed chip address.
+			You can allocate the nand_chip structure using
+			kmalloc or you can allocate it statically.
+			The NAND chip structure embeds an mtd structure
+			which will be registered to the MTD subsystem.
+			You can extract a pointer to the mtd structure
+			from a nand_chip pointer using the nand_to_mtd()
+			helper.
 		</para>
 		<para>
 			Kmalloc based example
 		</para>
 		<programlisting>
 static struct mtd_info *board_mtd;
-static unsigned long baseaddr;
+static void __iomem *baseaddr;
 		</programlisting>
 		<para>
 			Static example
 		</para>
 		<programlisting>
-static struct mtd_info board_mtd;
 static struct nand_chip board_chip;
-static unsigned long baseaddr;
+static void __iomem *baseaddr;
 		</programlisting>
 	</sect1>
-	<sect1>
+	<sect1 id="Partition_defines">
 		<title>Partition defines</title>
 		<para>
-			If you want to divide your device into parititions, then
-			enable the configuration switch CONFIG_MTD_PARITIONS and define
-			a paritioning scheme suitable to your board.
+			If you want to divide your device into partitions, then
+			define a partitioning scheme suitable to your board.
 		</para>
 		<programlisting>
 #define NUM_PARTITIONS 2
@@ -205,7 +205,7 @@ static struct mtd_partition partition_info[] = {
 };
 		</programlisting>
 	</sect1>
-	<sect1>
+	<sect1 id="Hardware_control_functions">
 		<title>Hardware control function</title>
 		<para>
 			The hardware control function provides access to the 
@@ -237,7 +237,7 @@ static void board_hwcontrol(struct mtd_info *mtd, int cmd)
 		<programlisting>
 static void board_hwcontrol(struct mtd_info *mtd, int cmd)
 {
-	struct nand_chip *this = (struct nand_chip *) mtd->priv;
+	struct nand_chip *this = mtd_to_nand(mtd);
 	switch(cmd){
 		case NAND_CTL_SETCLE: this->IO_ADDR_W |= CLE_ADRR_BIT;  break;
 		case NAND_CTL_CLRCLE: this->IO_ADDR_W &amp;= ~CLE_ADRR_BIT; break;
@@ -247,18 +247,18 @@ static void board_hwcontrol(struct mtd_info *mtd, int cmd)
 }
 		</programlisting>
 	</sect1>
-	<sect1>
+	<sect1 id="Device_ready_function">
 		<title>Device ready function</title>
 		<para>
 			If the hardware interface has the ready busy pin of the NAND chip connected to a
-			GPIO or other accesible I/O pin, this function is used to read back the state of the
+			GPIO or other accessible I/O pin, this function is used to read back the state of the
 			pin. The function has no arguments and should return 0, if the device is busy (R/B pin 
 			is low) and 1, if the device is ready (R/B pin is high).
 			If the hardware interface does not give access to the ready busy pin, then
 			the function must not be defined and the function pointer this->dev_ready is set to NULL.		
 		</para>
 	</sect1>
-	<sect1>
+	<sect1 id="Init_function">
 		<title>Init function</title>
 		<para>
 			The init function allocates memory and sets up all the board
@@ -266,38 +266,32 @@ static void board_hwcontrol(struct mtd_info *mtd, int cmd)
 			is set up nand_scan() is called. This function tries to
 			detect and identify then chip. If a chip is found all the
 			internal data fields are initialized accordingly.
-			The structure(s) have to be zeroed out first and then filled with the neccecary 
+			The structure(s) have to be zeroed out first and then filled with the necessary
 			information about the device.
 		</para>
 		<programlisting>
-int __init board_init (void)
+static int __init board_init (void)
 {
 	struct nand_chip *this;
 	int err = 0;
 
 	/* Allocate memory for MTD device structure and private data */
-	board_mtd = kmalloc (sizeof(struct mtd_info) + sizeof (struct nand_chip), GFP_KERNEL);
-	if (!board_mtd) {
+	this = kzalloc(sizeof(struct nand_chip), GFP_KERNEL);
+	if (!this) {
 		printk ("Unable to allocate NAND MTD device structure.\n");
 		err = -ENOMEM;
 		goto out;
 	}
 
-	/* Initialize structures */
-	memset ((char *) board_mtd, 0, sizeof(struct mtd_info) + sizeof(struct nand_chip));
+	board_mtd = nand_to_mtd(this);
 
-	/* map physical adress */
-	baseaddr = (unsigned long)ioremap(CHIP_PHYSICAL_ADDRESS, 1024);
-	if(!baseaddr){
+	/* map physical address */
+	baseaddr = ioremap(CHIP_PHYSICAL_ADDRESS, 1024);
+	if (!baseaddr) {
 		printk("Ioremap to access NAND chip failed\n");
 		err = -EIO;
 		goto out_mtd;
 	}
-
-	/* Get pointer to private data */
-	this = (struct nand_chip *) ();
-	/* Link the private data with the MTD structure */
-	board_mtd->priv = this;
 
 	/* Set address of NAND IO lines */
 	this->IO_ADDR_R = baseaddr;
@@ -310,7 +304,7 @@ int __init board_init (void)
 	this->dev_ready = board_dev_ready;
 	this->eccmode = NAND_ECC_SOFT;
 
-	/* Scan to find existance of the device */
+	/* Scan to find existence of the device */
 	if (nand_scan (board_mtd, 1)) {
 		err = -ENXIO;
 		goto out_ior;
@@ -320,19 +314,19 @@ int __init board_init (void)
 	goto out;
 
 out_ior:
-	iounmap((void *)baseaddr);
+	iounmap(baseaddr);
 out_mtd:
-	kfree (board_mtd);
+	kfree (this);
 out:
 	return err;
 }
 module_init(board_init);
 		</programlisting>
 	</sect1>
-	<sect1>
+	<sect1 id="Exit_function">
 		<title>Exit function</title>
 		<para>
-			The exit function is only neccecary if the driver is
+			The exit function is only necessary if the driver is
 			compiled as a module. It releases all resources which
 			are held by the chip driver and unregisters the partitions
 			in the MTD layer.
@@ -344,11 +338,11 @@ static void __exit board_cleanup (void)
 	/* Release resources, unregister device */
 	nand_release (board_mtd);
 
-	/* unmap physical adress */
-	iounmap((void *)baseaddr);
+	/* unmap physical address */
+	iounmap(baseaddr);
 	
 	/* Free the MTD device structure */
-	kfree (board_mtd);
+	kfree (mtd_to_nand(board_mtd));
 }
 module_exit(board_cleanup);
 #endif
@@ -363,10 +357,10 @@ module_exit(board_cleanup);
 		driver. For a list of functions which can be overridden by the board
 		driver see the documentation of the nand_chip structure.
 	</para>
-	<sect1>
+	<sect1 id="Multiple_chip_control">
 		<title>Multiple chip control</title>
 		<para>
-			The nand driver can control chip arrays. Therefor the
+			The nand driver can control chip arrays. Therefore the
 			board driver must provide an own select_chip function. This
 			function must (de)select the requested chip.
 			The function pointer in the nand_chip structure must
@@ -404,7 +398,7 @@ static void board_select_chip (struct mtd_info *mtd, int chip)
 		<programlisting>
 static void board_select_chip (struct mtd_info *mtd, int chip)
 {
-	struct nand_chip *this = (struct nand_chip *) mtd->priv;
+	struct nand_chip *this = mtd_to_nand(mtd);
 	
 	/* Deselect all chips */
 	this->IO_ADDR_R &amp;= ~BOARD_NAND_ADDR_MASK;
@@ -423,9 +417,9 @@ static void board_select_chip (struct mtd_info *mtd, int chip)
 }
 		</programlisting>
 	</sect1>
-	<sect1>
+	<sect1 id="Hardware_ECC_support">
 		<title>Hardware ECC support</title>
-		<sect2>
+		<sect2 id="Functions_and_constants">
 			<title>Functions and constants</title>
 			<para>
 				The nand driver supports three different types of
@@ -479,7 +473,7 @@ static void board_select_chip (struct mtd_info *mtd, int chip)
 				</itemizedlist>
 			</para>
 		</sect2>
-		<sect2>
+		<sect2 id="Hardware_ECC_with_syndrome_calculation">
 		<title>Hardware ECC with syndrome calculation</title>
 			<para>
 				Many hardware ECC implementations provide Reed-Solomon
@@ -489,22 +483,22 @@ static void board_select_chip (struct mtd_info *mtd, int chip)
 				Reed-Solomon library.
 			</para>
 			<para>
-				The ECC bytes must be placed immidiately after the data
+				The ECC bytes must be placed immediately after the data
 				bytes in order to make the syndrome generator work. This
 				is contrary to the usual layout used by software ECC. The
-				seperation of data and out of band area is not longer
+				separation of data and out of band area is not longer
 				possible. The nand driver code handles this layout and
 				the remaining free bytes in the oob area are managed by 
 				the autoplacement code. Provide a matching oob-layout
 				in this case. See rts_from4.c and diskonchip.c for 
 				implementation reference. In those cases we must also
 				use bad block tables on FLASH, because the ECC layout is
-				interferring with the bad block marker positions.
+				interfering with the bad block marker positions.
 				See bad block table support for details.
 			</para>
 		</sect2>
 	</sect1>
-	<sect1>
+	<sect1 id="Bad_Block_table_support">
 		<title>Bad block table support</title>
 		<para>
 			Most NAND chips mark the bad blocks at a defined
@@ -547,7 +541,7 @@ static void board_select_chip (struct mtd_info *mtd, int chip)
 		<para>	
 			nand_scan() calls the function nand_default_bbt(). 
 			nand_default_bbt() selects appropriate default
-			bad block table desriptors depending on the chip information
+			bad block table descriptors depending on the chip information
 			which was retrieved by nand_scan().
 		</para>
 		<para>
@@ -556,28 +550,28 @@ static void board_select_chip (struct mtd_info *mtd, int chip)
 			allows faster access than always checking the
 			bad block information on the flash chip itself.
 		</para>
-		<sect2>
+		<sect2 id="Flash_based_tables">
 			<title>Flash based tables</title>
 			<para>
-				It may be desired or neccecary to keep a bad block table in FLASH. 
+				It may be desired or necessary to keep a bad block table in FLASH.
 				For AG-AND chips this is mandatory, as they have no factory marked
 				bad blocks. They have factory marked good blocks. The marker pattern
 				is erased when the block is erased to be reused. So in case of
 				powerloss before writing the pattern back to the chip this block 
-				would be lost and added to the bad blocks. Therefor we scan the 
+				would be lost and added to the bad blocks. Therefore we scan the 
 				chip(s) when we detect them the first time for good blocks and 
 				store this information in a bad block table before erasing any 
 				of the blocks.
 			</para>
 			<para>
-				The blocks in which the tables are stored are procteted against
+				The blocks in which the tables are stored are protected against
 				accidental access by marking them bad in the memory bad block
-				table. The bad block table managment functions are allowed
-				to circumvernt this protection.
+				table. The bad block table management functions are allowed
+				to circumvent this protection.
 			</para>
 			<para>
 				The simplest way to activate the FLASH based bad block table support 
-				is to set the option NAND_USE_FLASH_BBT in the option field of
+				is to set the option NAND_BBT_USE_FLASH in the bbt_option field of
 				the nand chip structure before calling nand_scan(). For AG-AND
 				chips is this done by default.
 				This activates the default FLASH based bad block table functionality 
@@ -591,13 +585,13 @@ static void board_select_chip (struct mtd_info *mtd, int chip)
 				</itemizedlist>
 			</para>
 		</sect2>
-		<sect2>
+		<sect2 id="User_defined_tables">
 			<title>User defined tables</title>
 			<para>
 				User defined tables are created by filling out a 
 				nand_bbt_descr structure and storing the pointer in the
 				nand_chip structure member bbt_td before calling nand_scan(). 
-				If a mirror table is neccecary a second structure must be
+				If a mirror table is necessary a second structure must be
 				created and a pointer to this structure must be stored
 				in bbt_md inside the nand_chip structure. If the bbt_md 
 				member is set to NULL then only the main table is used
@@ -633,7 +627,7 @@ static void board_select_chip (struct mtd_info *mtd, int chip)
 				holds the bad block table. Store a pointer to the pattern  
 				in the pattern field. Further the length of the pattern has to be 
 				stored in len and the offset in the spare area must be given
-				in the offs member of the nand_bbt_descr stucture. For mirrored
+				in the offs member of the nand_bbt_descr structure. For mirrored
 				bad block tables different patterns are mandatory.</para></listitem>
 				<listitem><para>Table creation</para>
 				<para>Set the option NAND_BBT_CREATE to enable the table creation
@@ -652,7 +646,7 @@ static void board_select_chip (struct mtd_info *mtd, int chip)
 				<listitem><para>Table version control</para>
 				<para>Set the option NAND_BBT_VERSION to enable the table version control.
 				It's highly recommended to enable this for mirrored tables with write
-				support. It makes sure that the risk of loosing the bad block
+				support. It makes sure that the risk of losing the bad block
 				table information is reduced to the loss of the information about the
 				one worn out block which should be marked bad. The version is stored in
 				4 consecutive bytes in the spare area of the device. The position of
@@ -671,7 +665,7 @@ static void board_select_chip (struct mtd_info *mtd, int chip)
 				<para>
 				For automatic placement some blocks must be reserved for
 				bad block table storage. The number of reserved blocks is defined 
-				in the maxblocks member of the babd block table description structure.
+				in the maxblocks member of the bad block table description structure.
 				Reserving 4 blocks for mirrored tables should be a reasonable number. 
 				This also limits the number of blocks which are scanned for the bad
 				block table ident pattern.
@@ -680,7 +674,7 @@ static void board_select_chip (struct mtd_info *mtd, int chip)
 			</para>
 		</sect2>
 	</sect1>
-	<sect1>
+	<sect1 id="Spare_area_placement">
 		<title>Spare area (auto)placement</title>
 		<para>
 			The nand driver implements different possibilities for
@@ -734,7 +728,7 @@ struct nand_oobinfo {
 			</para></listitem>
 			</itemizedlist>
 		</para>
-		<sect2>
+		<sect2 id="Placement_defined_by_fs_driver">
 			<title>Placement defined by fs driver</title>
 			<para>
 				The calling function provides a pointer to a nand_oobinfo
@@ -764,7 +758,7 @@ struct nand_oobinfo {
 				done according to the given scheme in the nand_oobinfo structure.
 			</para>
 		</sect2>
-		<sect2>
+		<sect2 id="Automatic_placement">
 			<title>Automatic placement</title>
 			<para>
 				Automatic placement uses the built in defaults to place the
@@ -778,24 +772,10 @@ struct nand_oobinfo {
 				done according to the default builtin scheme.
 			</para>
 		</sect2>
-		<sect2>
-			<title>User space placement selection</title>
-		<para>
-			All non ecc functions like mtd->read and mtd->write use an internal 
-			structure, which can be set by an ioctl. This structure is preset 
-			to the autoplacement default.
-	     		<programlisting>
-	ioctl (fd, MEMSETOOBSEL, oobsel);
-	     		</programlisting>
-			oobsel is a pointer to a user supplied structure of type
-			nand_oobconfig. The contents of this structure must match the 
-			criteria of the filesystem, which will be used. See an example in utils/nandwrite.c.
-		</para>
-		</sect2>
 	</sect1>	
-	<sect1>
+	<sect1 id="Spare_area_autoplacement_default">
 		<title>Spare area autoplacement default schemes</title>
-		<sect2>
+		<sect2 id="pagesize_256">
 			<title>256 byte pagesize</title>
 <informaltable><tgroup cols="3"><tbody>
 <row>
@@ -847,7 +827,7 @@ pages this byte is reserved</entry>
 </row>
 </tbody></tgroup></informaltable>
 		</sect2>
-		<sect2>
+		<sect2 id="pagesize_512">
 			<title>512 byte pagesize</title>
 <informaltable><tgroup cols="3"><tbody>
 <row>
@@ -910,7 +890,7 @@ in this page</entry>
 </row>
 </tbody></tgroup></informaltable>
 		</sect2>
-		<sect2>
+		<sect2 id="pagesize_2048">
 			<title>2048 byte pagesize</title>
 <informaltable><tgroup cols="3"><tbody>
 <row>
@@ -1064,19 +1044,19 @@ data in this page</entry>
 <row>
 <entry>0x3D</entry>
 <entry>ECC byte 21</entry>
-<entry>Error correction code byte 0 of the eigth 256 Bytes of data
+<entry>Error correction code byte 0 of the eighth 256 Bytes of data
 in this page</entry>
 </row>
 <row>
 <entry>0x3E</entry>
 <entry>ECC byte 22</entry>
-<entry>Error correction code byte 1 of the eigth 256 Bytes of data
+<entry>Error correction code byte 1 of the eighth 256 Bytes of data
 in this page</entry>
 </row>
 <row>
 <entry>0x3F</entry>
 <entry>ECC byte 23</entry>
-<entry>Error correction code byte 2 of the eigth 256 Bytes of data
+<entry>Error correction code byte 2 of the eighth 256 Bytes of data
 in this page</entry>
 </row>
 </tbody></tgroup></informaltable>
@@ -1087,18 +1067,18 @@ in this page</entry>
   <chapter id="filesystems">
      	<title>Filesystem support</title>
 	<para>
-		The NAND driver provides all neccecary functions for a
+		The NAND driver provides all necessary functions for a
 		filesystem via the MTD interface.
 	</para>
 	<para>
-		Filesystems must be aware of the NAND pecularities and
+		Filesystems must be aware of the NAND peculiarities and
 		restrictions. One major restrictions of NAND Flash is, that you cannot 
 		write as often as you want to a page. The consecutive writes to a page, 
 		before erasing it again, are restricted to 1-3 writes, depending on the 
 		manufacturers specifications. This applies similar to the spare area. 
 	</para>
 	<para>
-		Therefor NAND aware filesystems must either write in page size chunks
+		Therefore NAND aware filesystems must either write in page size chunks
 		or hold a writebuffer to collect smaller writes until they sum up to 
 		pagesize. Available NAND aware filesystems: JFFS2, YAFFS. 		
 	</para>
@@ -1130,16 +1110,14 @@ in this page</entry>
      <para>
      This chapter describes the constants which might be relevant for a driver developer.
      </para>
-     <sect1>   
+     <sect1 id="Chip_option_constants">
 	<title>Chip option constants</title>
-     	<sect2>   
+     	<sect2 id="Constants_for_chip_id_table">
 		<title>Constants for chip id table</title>
      		<para>
 		These constants are defined in nand.h. They are ored together to describe
 		the chip functionality.
      		<programlisting>
-/* Chip can not auto increment pages */
-#define NAND_NO_AUTOINCR	0x00000001
 /* Buswitdh is 16 bit */
 #define NAND_BUSWIDTH_16	0x00000002
 /* Device supports partial programming without padding */
@@ -1157,15 +1135,12 @@ in this page</entry>
 		</programlisting>
      		</para>
      	</sect2>
-     	<sect2>   
+     	<sect2 id="Constants_for_runtime_options">
 		<title>Constants for runtime options</title>
      		<para>
 		These constants are defined in nand.h. They are ored together to describe
 		the functionality.
      		<programlisting>
-/* Use a flash based bad block table. This option is parsed by the
- * default bad block table function (nand_default_bbt). */
-#define NAND_USE_FLASH_BBT	0x00010000
 /* The hw ecc generator provides a syndrome instead a ecc value on read 
  * This can only work if we have the ecc bytes directly behind the 
  * data bytes. Applies for DOC and AG-AND Renesas HW Reed Solomon generators */
@@ -1175,7 +1150,7 @@ in this page</entry>
      	</sect2>
      </sect1>	
 
-     <sect1>   
+     <sect1 id="EEC_selection_constants">
 	<title>ECC selection constants</title>
 	<para>
 	Use these constants to select the ECC algorithm.
@@ -1196,7 +1171,7 @@ in this page</entry>
 	</para>
      </sect1>	
 
-     <sect1>   
+     <sect1 id="Hardware_control_related_constants">
 	<title>Hardware control related constants</title>
 	<para>
 	These constants describe the requested hardware access function when
@@ -1222,7 +1197,7 @@ in this page</entry>
 	</para>
      </sect1>	
 
-     <sect1>   
+     <sect1 id="Bad_block_table_constants">
 	<title>Bad block table related constants</title>
 	<para>
 	These constants describe the options used for bad block
@@ -1240,19 +1215,13 @@ in this page</entry>
 #define	NAND_BBT_LASTBLOCK	0x00000010
 /* The bbt is at the given page, else we must scan for the bbt */
 #define NAND_BBT_ABSPAGE	0x00000020
-/* The bbt is at the given page, else we must scan for the bbt */
-#define NAND_BBT_SEARCH		0x00000040
 /* bbt is stored per chip on multichip devices */
 #define NAND_BBT_PERCHIP	0x00000080
 /* bbt has a version counter at offset veroffs */
 #define NAND_BBT_VERSION	0x00000100
 /* Create a bbt if none axists */
 #define NAND_BBT_CREATE		0x00000200
-/* Search good / bad pattern through all pages of a block */
-#define NAND_BBT_SCANALLPAGES	0x00000400
-/* Scan block empty during good / bad block scan */
-#define NAND_BBT_SCANEMPTY	0x00000800
-/* Write bbt if neccecary */
+/* Write bbt if necessary */
 #define NAND_BBT_WRITE		0x00001000
 /* Read and write back block contents when writing bbt */
 #define NAND_BBT_SAVECONTENT	0x00002000
@@ -1295,7 +1264,9 @@ in this page</entry>
      </para>
 !Idrivers/mtd/nand/nand_base.c
 !Idrivers/mtd/nand/nand_bbt.c
-!Idrivers/mtd/nand/nand_ecc.c
+<!-- No internal functions for kernel-doc:
+X!Idrivers/mtd/nand/nand_ecc.c
+-->
   </chapter>
 
   <chapter id="credits">

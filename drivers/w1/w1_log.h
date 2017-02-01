@@ -1,8 +1,8 @@
 /*
- * 	w1_log.h
+ *	w1_log.h
  *
- * Copyright (c) 2004 Evgeniy Polyakov <johnpol@2ka.mipt.ru>
- * 
+ * Copyright (c) 2004 Evgeniy Polyakov <zbr@ioremap.net>
+ *
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,8 +29,8 @@
 #else
 #  define assert(expr) \
         if(unlikely(!(expr))) {				        \
-        printk(KERN_ERR "Assertion failed! %s,%s,%s,line=%d\n",	\
-        #expr,__FILE__,__FUNCTION__,__LINE__);		        \
+		pr_err("Assertion failed! %s,%s,%s,line=%d\n",	\
+		#expr, __FILE__, __func__, __LINE__);		\
         }
 #endif
 

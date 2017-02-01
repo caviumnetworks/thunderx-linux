@@ -1,5 +1,5 @@
 /*
- * sound/mpu401.c
+ * sound/oss/mpu401.c
  *
  * The low level driver for Roland MPU-401 compatible Midi cards.
  */
@@ -19,6 +19,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
@@ -315,6 +316,7 @@ static int mpu_input_scanner(struct mpu_config *devc, unsigned char midic)
 				case 0xf6:
 					/* printk( "tune_request\n"); */
 					devc->m_state = ST_INIT;
+					break;
 
 					/*
 					 *    Real time messages
@@ -432,19 +434,10 @@ static void mpu401_input_loop(struct mpu_config *devc)
 	devc->m_busy = 0;
 }
 
-int intchk_mpu401(void *dev_id)
+static irqreturn_t mpuintr(int irq, void *dev_id)
 {
 	struct mpu_config *devc;
-	int dev = (int) dev_id;
-
-	devc = &dev_conf[dev];
-	return input_avail(devc);
-}
-
-irqreturn_t mpuintr(int irq, void *dev_id, struct pt_regs *dummy)
-{
-	struct mpu_config *devc;
-	int dev = (int) dev_id;
+	int dev = (int)(unsigned long) dev_id;
 	int handled = 0;
 
 	devc = &dev_conf[dev];
@@ -575,7 +568,6 @@ static int mpu401_out(int dev, unsigned char midi_byte)
 static int mpu401_command(int dev, mpu_command_rec * cmd)
 {
 	int i, timeout, ok;
-	int ret = 0;
 	unsigned long   flags;
 	struct mpu_config *devc;
 
@@ -652,7 +644,6 @@ retry:
 			}
 		}
 	}
-	ret = 0;
 	cmd->data[0] = 0;
 
 	if (cmd->nr_returns)
@@ -674,7 +665,7 @@ retry:
 		}
 	}
 	spin_unlock_irqrestore(&devc->lock,flags);
-	return ret;
+	return 0;
 }
 
 static int mpu_cmd(int dev, int cmd, int data)
@@ -779,7 +770,7 @@ static int mpu_synth_ioctl(int dev, unsigned int cmd, void __user *arg)
 
 	midi_dev = synth_devs[dev]->midi_dev;
 
-	if (midi_dev < 0 || midi_dev > num_midis || midi_devs[midi_dev] == NULL)
+	if (midi_dev < 0 || midi_dev >= num_midis || midi_devs[midi_dev] == NULL)
 		return -ENXIO;
 
 	devc = &dev_conf[midi_dev];
@@ -935,31 +926,21 @@ static struct midi_operations mpu401_midi_operations[MAX_MIDI_DEV];
 static void mpu401_chk_version(int n, struct mpu_config *devc)
 {
 	int tmp;
-	unsigned long flags;
 
 	devc->version = devc->revision = 0;
 
-	spin_lock_irqsave(&devc->lock,flags);
-	if ((tmp = mpu_cmd(n, 0xAC, 0)) < 0)
-	{
-		spin_unlock_irqrestore(&devc->lock,flags);
+	tmp = mpu_cmd(n, 0xAC, 0);
+	if (tmp < 0)
 		return;
-	}
 	if ((tmp & 0xf0) > 0x20)	/* Why it's larger than 2.x ??? */
-	{
-		spin_unlock_irqrestore(&devc->lock,flags);
 		return;
-	}
 	devc->version = tmp;
 
-	if ((tmp = mpu_cmd(n, 0xAD, 0)) < 0)
-	{
+	if ((tmp = mpu_cmd(n, 0xAD, 0)) < 0) {
 		devc->version = 0;
-		spin_unlock_irqrestore(&devc->lock,flags);
 		return;
 	}
 	devc->revision = tmp;
-	spin_unlock_irqrestore(&devc->lock,flags);
 }
 
 int attach_mpu401(struct address_info *hw_config, struct module *owner)
@@ -992,7 +973,6 @@ int attach_mpu401(struct address_info *hw_config, struct module *owner)
 	devc->m_busy = 0;
 	devc->m_state = ST_INIT;
 	devc->shared_irq = hw_config->always_detect;
-	devc->irq = hw_config->irq;
 	spin_lock_init(&devc->lock);
 
 	if (devc->irq < 0)
@@ -1012,7 +992,8 @@ int attach_mpu401(struct address_info *hw_config, struct module *owner)
 		}
 		if (!devc->shared_irq)
 		{
-			if (request_irq(devc->irq, mpuintr, 0, "mpu401", (void *)m) < 0)
+			if (request_irq(devc->irq, mpuintr, 0, "mpu401",
+					hw_config) < 0)
 			{
 				printk(KERN_WARNING "mpu401: Failed to allocate IRQ%d\n", devc->irq);
 				ret = -ENOMEM;
@@ -1023,7 +1004,7 @@ int attach_mpu401(struct address_info *hw_config, struct module *owner)
 		mpu401_chk_version(m, devc);
 		if (devc->version == 0)
 			mpu401_chk_version(m, devc);
-			spin_unlock_irqrestore(&devc->lock,flags);
+		spin_unlock_irqrestore(&devc->lock, flags);
 	}
 
 	if (devc->version != 0)
@@ -1032,7 +1013,7 @@ int attach_mpu401(struct address_info *hw_config, struct module *owner)
 				devc->capabilities |= MPU_CAP_INTLG;	/* Supports intelligent mode */
 
 
-	mpu401_synth_operations[m] = (struct synth_operations *)kmalloc(sizeof(struct synth_operations), GFP_KERNEL);
+	mpu401_synth_operations[m] = kmalloc(sizeof(struct synth_operations), GFP_KERNEL);
 
 	if (mpu401_synth_operations[m] == NULL)
 	{
@@ -1092,7 +1073,7 @@ int attach_mpu401(struct address_info *hw_config, struct module *owner)
 			sprintf(mpu_synth_info[m].name, "%s (MPU401)", hw_config->name);
 		else
 			sprintf(mpu_synth_info[m].name,
-				"MPU-401 %d.%d%c Midi interface #%d",
+				"MPU-401 %d.%d%c MIDI #%d",
 				(int) (devc->version & 0xf0) >> 4,
 				devc->version & 0x0f,
 				revision_char,
@@ -1121,7 +1102,7 @@ int attach_mpu401(struct address_info *hw_config, struct module *owner)
 	return 0;
 
 out_irq:
-	free_irq(devc->irq, (void *)m);
+	free_irq(devc->irq, hw_config);
 out_mididev:
 	sound_unload_mididev(m);
 out_err:
@@ -1236,12 +1217,11 @@ void unload_mpu401(struct address_info *hw_config)
 	if (n != -1) {
 		release_region(hw_config->io_base, 2);
 		if (hw_config->always_detect == 0 && hw_config->irq > 0)
-			free_irq(hw_config->irq, (void *)n);
+			free_irq(hw_config->irq, hw_config);
 		p=mpu401_synth_operations[n];
 		sound_unload_mididev(n);
 		sound_unload_timerdev(hw_config->slots[2]);
-		if(p)
-			kfree(p);
+		kfree(p);
 	}
 }
 
@@ -1762,8 +1742,6 @@ static int mpu_timer_init(int midi_dev)
 EXPORT_SYMBOL(probe_mpu401);
 EXPORT_SYMBOL(attach_mpu401);
 EXPORT_SYMBOL(unload_mpu401);
-EXPORT_SYMBOL(intchk_mpu401);
-EXPORT_SYMBOL(mpuintr);
 
 static struct address_info cfg;
 

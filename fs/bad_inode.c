@@ -9,66 +9,123 @@
  */
 
 #include <linux/fs.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/stat.h>
 #include <linux/time.h>
-#include <linux/smp_lock.h>
 #include <linux/namei.h>
+#include <linux/poll.h>
 
-static int return_EIO(void)
+static int bad_file_open(struct inode *inode, struct file *filp)
 {
 	return -EIO;
 }
 
-#define EIO_ERROR ((void *) (return_EIO))
-
-static struct file_operations bad_file_ops =
+static const struct file_operations bad_file_ops =
 {
-	.llseek		= EIO_ERROR,
-	.aio_read	= EIO_ERROR,
-	.read		= EIO_ERROR,
-	.write		= EIO_ERROR,
-	.aio_write	= EIO_ERROR,
-	.readdir	= EIO_ERROR,
-	.poll		= EIO_ERROR,
-	.ioctl		= EIO_ERROR,
-	.mmap		= EIO_ERROR,
-	.open		= EIO_ERROR,
-	.flush		= EIO_ERROR,
-	.release	= EIO_ERROR,
-	.fsync		= EIO_ERROR,
-	.aio_fsync	= EIO_ERROR,
-	.fasync		= EIO_ERROR,
-	.lock		= EIO_ERROR,
-	.readv		= EIO_ERROR,
-	.writev		= EIO_ERROR,
-	.sendfile	= EIO_ERROR,
-	.sendpage	= EIO_ERROR,
-	.get_unmapped_area = EIO_ERROR,
+	.open		= bad_file_open,
 };
 
-struct inode_operations bad_inode_ops =
+static int bad_inode_create (struct inode *dir, struct dentry *dentry,
+		umode_t mode, bool excl)
 {
-	.create		= EIO_ERROR,
-	.lookup		= EIO_ERROR,
-	.link		= EIO_ERROR,
-	.unlink		= EIO_ERROR,
-	.symlink	= EIO_ERROR,
-	.mkdir		= EIO_ERROR,
-	.rmdir		= EIO_ERROR,
-	.mknod		= EIO_ERROR,
-	.rename		= EIO_ERROR,
-	.readlink	= EIO_ERROR,
+	return -EIO;
+}
+
+static struct dentry *bad_inode_lookup(struct inode *dir,
+			struct dentry *dentry, unsigned int flags)
+{
+	return ERR_PTR(-EIO);
+}
+
+static int bad_inode_link (struct dentry *old_dentry, struct inode *dir,
+		struct dentry *dentry)
+{
+	return -EIO;
+}
+
+static int bad_inode_unlink(struct inode *dir, struct dentry *dentry)
+{
+	return -EIO;
+}
+
+static int bad_inode_symlink (struct inode *dir, struct dentry *dentry,
+		const char *symname)
+{
+	return -EIO;
+}
+
+static int bad_inode_mkdir(struct inode *dir, struct dentry *dentry,
+			umode_t mode)
+{
+	return -EIO;
+}
+
+static int bad_inode_rmdir (struct inode *dir, struct dentry *dentry)
+{
+	return -EIO;
+}
+
+static int bad_inode_mknod (struct inode *dir, struct dentry *dentry,
+			umode_t mode, dev_t rdev)
+{
+	return -EIO;
+}
+
+static int bad_inode_rename2(struct inode *old_dir, struct dentry *old_dentry,
+			     struct inode *new_dir, struct dentry *new_dentry,
+			     unsigned int flags)
+{
+	return -EIO;
+}
+
+static int bad_inode_readlink(struct dentry *dentry, char __user *buffer,
+		int buflen)
+{
+	return -EIO;
+}
+
+static int bad_inode_permission(struct inode *inode, int mask)
+{
+	return -EIO;
+}
+
+static int bad_inode_getattr(struct vfsmount *mnt, struct dentry *dentry,
+			struct kstat *stat)
+{
+	return -EIO;
+}
+
+static int bad_inode_setattr(struct dentry *direntry, struct iattr *attrs)
+{
+	return -EIO;
+}
+
+static ssize_t bad_inode_listxattr(struct dentry *dentry, char *buffer,
+			size_t buffer_size)
+{
+	return -EIO;
+}
+
+static const struct inode_operations bad_inode_ops =
+{
+	.create		= bad_inode_create,
+	.lookup		= bad_inode_lookup,
+	.link		= bad_inode_link,
+	.unlink		= bad_inode_unlink,
+	.symlink	= bad_inode_symlink,
+	.mkdir		= bad_inode_mkdir,
+	.rmdir		= bad_inode_rmdir,
+	.mknod		= bad_inode_mknod,
+	.rename		= bad_inode_rename2,
+	.readlink	= bad_inode_readlink,
 	/* follow_link must be no-op, otherwise unmounting this inode
 	   won't work */
-	.truncate	= EIO_ERROR,
-	.permission	= EIO_ERROR,
-	.getattr	= EIO_ERROR,
-	.setattr	= EIO_ERROR,
-	.setxattr	= EIO_ERROR,
-	.getxattr	= EIO_ERROR,
-	.listxattr	= EIO_ERROR,
-	.removexattr	= EIO_ERROR,
+	/* put_link returns void */
+	/* truncate returns void */
+	.permission	= bad_inode_permission,
+	.getattr	= bad_inode_getattr,
+	.setattr	= bad_inode_setattr,
+	.listxattr	= bad_inode_listxattr,
 };
 
 
@@ -90,14 +147,15 @@ struct inode_operations bad_inode_ops =
  *	on it to fail from this point on.
  */
  
-void make_bad_inode(struct inode * inode) 
+void make_bad_inode(struct inode *inode)
 {
 	remove_inode_hash(inode);
 
 	inode->i_mode = S_IFREG;
 	inode->i_atime = inode->i_mtime = inode->i_ctime =
-		current_fs_time(inode->i_sb);
+		current_time(inode);
 	inode->i_op = &bad_inode_ops;	
+	inode->i_opflags &= ~IOP_XATTR;
 	inode->i_fop = &bad_file_ops;	
 }
 EXPORT_SYMBOL(make_bad_inode);
@@ -115,9 +173,23 @@ EXPORT_SYMBOL(make_bad_inode);
  *	Returns true if the inode in question has been marked as bad.
  */
  
-int is_bad_inode(struct inode * inode) 
+bool is_bad_inode(struct inode *inode)
 {
 	return (inode->i_op == &bad_inode_ops);	
 }
 
 EXPORT_SYMBOL(is_bad_inode);
+
+/**
+ * iget_failed - Mark an under-construction inode as dead and release it
+ * @inode: The inode to discard
+ *
+ * Mark an under-construction inode as dead and release it.
+ */
+void iget_failed(struct inode *inode)
+{
+	make_bad_inode(inode);
+	unlock_new_inode(inode);
+	iput(inode);
+}
+EXPORT_SYMBOL(iget_failed);

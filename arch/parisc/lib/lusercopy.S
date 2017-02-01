@@ -37,6 +37,7 @@
 	
 #include <asm/assembly.h>
 #include <asm/errno.h>
+#include <linux/linkage.h>
 
 	/*
 	 * get_sr gets the appropriate space value into
@@ -60,60 +61,13 @@
 	.endm
 
 	/*
-	 * long lstrncpy_from_user(char *dst, const char *src, long n)
-	 *
-	 * Returns -EFAULT if exception before terminator,
-	 *         N if the entire buffer filled,
-	 *         otherwise strlen (i.e. excludes zero byte)
-	 */
-
-	.export lstrncpy_from_user,code
-lstrncpy_from_user:
-	.proc
-	.callinfo NO_CALLS
-	.entry
-	comib,=     0,%r24,$lsfu_done
-	copy        %r24,%r23
-	get_sr
-1:      ldbs,ma     1(%sr1,%r25),%r1
-$lsfu_loop:
-	stbs,ma     %r1,1(%r26)
-	comib,=,n   0,%r1,$lsfu_done
-	addib,<>,n  -1,%r24,$lsfu_loop
-2:      ldbs,ma     1(%sr1,%r25),%r1
-$lsfu_done:
-	sub         %r23,%r24,%r28
-$lsfu_exit:
-	bv          %r0(%r2)
-	nop
-	.exit
-
-	.section .fixup,"ax"
-3:      fixup_branch $lsfu_exit
-	ldi         -EFAULT,%r28
-	.previous
-
-	.section __ex_table,"aw"
-#ifdef __LP64__
-	.dword      1b,3b
-	.dword      2b,3b
-#else
-	.word       1b,3b
-	.word       2b,3b
-#endif
-	.previous
-
-	.procend
-
-	/*
 	 * unsigned long lclear_user(void *to, unsigned long n)
 	 *
 	 * Returns 0 for success.
 	 * otherwise, returns number of bytes not transferred.
 	 */
 
-	.export lclear_user,code
-lclear_user:
+ENTRY_CFI(lclear_user)
 	.proc
 	.callinfo NO_CALLS
 	.entry
@@ -127,19 +81,14 @@ $lclu_done:
 	bv          %r0(%r2)
 	copy        %r25,%r28
 	.exit
+ENDPROC_CFI(lclear_user)
 
 	.section .fixup,"ax"
 2:      fixup_branch $lclu_done
 	ldo        1(%r25),%r25
 	.previous
 
-	.section __ex_table,"aw"
-#ifdef __LP64__
-	.dword      1b,2b
-#else
-	.word       1b,2b
-#endif
-	.previous
+	ASM_EXCEPTIONTABLE_ENTRY(1b,2b)
 
 	.procend
 
@@ -151,8 +100,7 @@ $lclu_done:
 	 *         else strlen + 1 (i.e. includes zero byte).
 	 */
 
-	.export lstrnlen_user,code
-lstrnlen_user:
+ENTRY_CFI(lstrnlen_user)
 	.proc
 	.callinfo NO_CALLS
 	.entry
@@ -172,21 +120,15 @@ $lslen_done:
 $lslen_nzero:
 	b           $lslen_done
 	ldo         1(%r26),%r26 /* special case for N == 0 */
+ENDPROC_CFI(lstrnlen_user)
 
 	.section .fixup,"ax"
 3:      fixup_branch $lslen_done
 	copy        %r24,%r26    /* reset r26 so 0 is returned on fault */
 	.previous
 
-	.section __ex_table,"aw"
-#ifdef __LP64__
-	.dword      1b,3b
-	.dword      2b,3b
-#else
-	.word       1b,3b
-	.word       2b,3b
-#endif
-	.previous
+	ASM_EXCEPTIONTABLE_ENTRY(1b,3b)
+	ASM_EXCEPTIONTABLE_ENTRY(2b,3b)
 
 	.procend
 

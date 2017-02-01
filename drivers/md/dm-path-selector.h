@@ -44,38 +44,37 @@ struct path_selector_type {
 	 * Add an opaque path object, along with some selector specific
 	 * path args (eg, path priority).
 	 */
-	int (*add_path) (struct path_selector *ps, struct path *path,
+	int (*add_path) (struct path_selector *ps, struct dm_path *path,
 			 int argc, char **argv, char **error);
 
 	/*
 	 * Chooses a path for this io, if no paths are available then
 	 * NULL will be returned.
-	 *
-	 * repeat_count is the number of times to use the path before
-	 * calling the function again.  0 means don't call it again unless
-	 * the path fails.
 	 */
-	struct path *(*select_path) (struct path_selector *ps,
-				     unsigned *repeat_count);
+	struct dm_path *(*select_path) (struct path_selector *ps,
+					size_t nr_bytes);
 
 	/*
 	 * Notify the selector that a path has failed.
 	 */
-	void (*fail_path) (struct path_selector *ps, struct path *p);
+	void (*fail_path) (struct path_selector *ps, struct dm_path *p);
 
 	/*
 	 * Ask selector to reinstate a path.
 	 */
-	int (*reinstate_path) (struct path_selector *ps, struct path *p);
+	int (*reinstate_path) (struct path_selector *ps, struct dm_path *p);
 
 	/*
 	 * Table content based on parameters added in ps_add_path_fn
 	 * or path selector status
 	 */
-	int (*status) (struct path_selector *ps, struct path *path,
+	int (*status) (struct path_selector *ps, struct dm_path *path,
 		       status_type_t type, char *result, unsigned int maxlen);
 
-	int (*end_io) (struct path_selector *ps, struct path *path);
+	int (*start_io) (struct path_selector *ps, struct dm_path *path,
+			 size_t nr_bytes);
+	int (*end_io) (struct path_selector *ps, struct dm_path *path,
+		       size_t nr_bytes);
 };
 
 /* Register a path selector */

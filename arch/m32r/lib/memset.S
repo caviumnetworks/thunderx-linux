@@ -12,9 +12,6 @@
  *        ret: r0
  *
  */
-/* $Id$ */
-
-#include <linux/config.h>
 
 	.text
 	.global	memset

@@ -1,5 +1,5 @@
 /*
- * sound/sb_mixer.c
+ * sound/oss/sb_mixer.c
  *
  * The low level mixer driver for the Sound Blaster compatible cards.
  */
@@ -15,6 +15,8 @@
  * Rolf Fokkens (Dec 20 1998)	: Moved ESS stuff into sb_ess.[ch]
  * Stanislav Voronyi <stas@esc.kharkov.com>	: Support for AWE 3DSE device (Jun 7 1999)
  */
+
+#include <linux/slab.h>
 
 #include "sound_config.h"
 
@@ -230,7 +232,7 @@ static int detect_mixer(sb_devc * devc)
 	return 1;
 }
 
-static void change_bits(sb_devc * devc, unsigned char *regval, int dev, int chn, int newval)
+static void oss_change_bits(sb_devc *devc, unsigned char *regval, int dev, int chn, int newval)
 {
 	unsigned char mask;
 	int shift;
@@ -273,16 +275,16 @@ int sb_common_mixer_set(sb_devc * devc, int dev, int left, int right)
 	int regoffs;
 	unsigned char val;
 
+	if ((dev < 0) || (dev >= devc->iomap_sz))
+		return -EINVAL;
+
 	regoffs = (*devc->iomap)[dev][LEFT_CHN].regno;
 
 	if (regoffs == 0)
 		return -EINVAL;
 
-	if ((dev < 0) || (dev >= devc->iomap_sz))
-	    return -EINVAL;
-
 	val = sb_getmixer(devc, regoffs);
-	change_bits(devc, &val, dev, LEFT_CHN, left);
+	oss_change_bits(devc, &val, dev, LEFT_CHN, left);
 
 	if ((*devc->iomap)[dev][RIGHT_CHN].regno != regoffs)	/*
 								 * Change register
@@ -302,7 +304,7 @@ int sb_common_mixer_set(sb_devc * devc, int dev, int left, int right)
 							 * Read the new one
 							 */
 	}
-	change_bits(devc, &val, dev, RIGHT_CHN, right);
+	oss_change_bits(devc, &val, dev, RIGHT_CHN, right);
 
 	sb_setmixer(devc, regoffs, val);
 
@@ -408,7 +410,7 @@ static int set_recmask(sb_devc * devc, int mask)
 		case MDL_SMW:
 			if (devc->model == MDL_ESS && ess_set_recmask (devc, &devmask)) {
 				break;
-			};
+			}
 			if (devmask != SOUND_MASK_MIC &&
 				devmask != SOUND_MASK_LINE &&
 				devmask != SOUND_MASK_CD)
@@ -664,7 +666,7 @@ static void sb_mixer_reset(sb_devc * devc)
 
 	if (devc->model != MDL_ESS || !ess_mixer_reset (devc)) {
 		set_recmask(devc, SOUND_MASK_MIC);
-	};
+	}
 }
 
 int sb_mixer_init(sb_devc * devc, struct module *owner)
@@ -734,7 +736,7 @@ int sb_mixer_init(sb_devc * devc, struct module *owner)
 	if (m == -1)
 		return 0;
 
-	mixer_devs[m] = (struct mixer_operations *)kmalloc(sizeof(struct mixer_operations), GFP_KERNEL);
+	mixer_devs[m] = kmalloc(sizeof(struct mixer_operations), GFP_KERNEL);
 	if (mixer_devs[m] == NULL)
 	{
 		printk(KERN_ERR "sb_mixer: Can't allocate memory\n");

@@ -40,8 +40,9 @@
 #ifndef SYM_GLUE_H
 #define SYM_GLUE_H
 
-#include <linux/config.h>
+#include <linux/completion.h>
 #include <linux/delay.h>
+#include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/pci.h>
 #include <linux/string.h>
@@ -68,8 +69,7 @@
  */
 #define	SYM_CONF_TIMER_INTERVAL		((HZ+1)/2)
 
-#define SYM_OPT_HANDLE_DIR_UNKNOWN
-#define SYM_OPT_HANDLE_DEVICE_QUEUEING
+#undef SYM_OPT_HANDLE_DEVICE_QUEUEING
 #define SYM_OPT_LIMIT_COMMAND_REORDERING
 
 /*
@@ -142,33 +142,6 @@
 #define scr_to_cpu(dw)	le32_to_cpu(dw)
 
 /*
- *  Remap some status field values.
- */
-#define CAM_REQ_CMP		DID_OK
-#define CAM_SEL_TIMEOUT		DID_NO_CONNECT
-#define CAM_CMD_TIMEOUT		DID_TIME_OUT
-#define CAM_REQ_ABORTED		DID_ABORT
-#define CAM_UNCOR_PARITY	DID_PARITY
-#define CAM_SCSI_BUS_RESET	DID_RESET	
-#define CAM_REQUEUE_REQ		DID_SOFT_ERROR
-#define	CAM_UNEXP_BUSFREE	DID_ERROR
-#define	CAM_SCSI_BUSY		DID_BUS_BUSY
-
-#define	CAM_DEV_NOT_THERE	DID_NO_CONNECT
-#define	CAM_REQ_INVALID		DID_ERROR
-#define	CAM_REQ_TOO_BIG		DID_ERROR
-
-#define	CAM_RESRC_UNAVAIL	DID_ERROR
-
-/*
- *  Remap data direction values.
- */
-#define CAM_DIR_NONE		DMA_NONE
-#define CAM_DIR_IN		DMA_FROM_DEVICE
-#define CAM_DIR_OUT		DMA_TO_DEVICE
-#define CAM_DIR_UNKNOWN		DMA_BIDIRECTIONAL
-
-/*
  *  These ones are used as return code from 
  *  error recovery handlers under Linux.
  */
@@ -201,19 +174,16 @@ struct sym_slcb {
  */
 struct sym_shcb {
 	/*
-	 *  Chip and controller indentification.
+	 *  Chip and controller identification.
 	 */
 	int		unit;
 	char		inst_name[16];
 	char		chip_name[8];
-	struct pci_dev	*device;
 
 	struct Scsi_Host *host;
 
 	void __iomem *	ioaddr;		/* MMIO kernel io address	*/
 	void __iomem *	ramaddr;	/* RAM  kernel io address	*/
-	u_short		io_ws;		/* IO window size		*/
-	int		irq;		/* IRQ number			*/
 
 	struct timer_list timer;	/* Timer handler link header	*/
 	u_long		lasttime;
@@ -241,20 +211,21 @@ struct sym_device {
 	} s;
 	struct sym_chip chip;
 	struct sym_nvram *nvram;
-	u_short device_id;
 	u_char host_id;
 };
 
 /*
  *  Driver host data structure.
  */
-struct host_data {
+struct sym_data {
 	struct sym_hcb *ncb;
+	struct completion *io_reset;		/* PCI error handling */
+	struct pci_dev *pdev;
 };
 
 static inline struct sym_hcb * sym_get_hcb(struct Scsi_Host *host)
 {
-	return ((struct host_data *)host->hostdata)->ncb;
+	return ((struct sym_data *)host->hostdata)->ncb;
 }
 
 #include "sym_fw.h"
@@ -263,7 +234,7 @@ static inline struct sym_hcb * sym_get_hcb(struct Scsi_Host *host)
 /*
  *  Set the status field of a CAM CCB.
  */
-static __inline void 
+static inline void
 sym_set_cam_status(struct scsi_cmnd *cmd, int status)
 {
 	cmd->result &= ~(0xff  << 16);
@@ -273,7 +244,7 @@ sym_set_cam_status(struct scsi_cmnd *cmd, int status)
 /*
  *  Get the status field of a CAM CCB.
  */
-static __inline int 
+static inline int
 sym_get_cam_status(struct scsi_cmnd *cmd)
 {
 	return host_byte(cmd->result);
@@ -282,9 +253,9 @@ sym_get_cam_status(struct scsi_cmnd *cmd)
 /*
  *  Build CAM result for a successful IO and for a failed IO.
  */
-static __inline void sym_set_cam_result_ok(struct sym_ccb *cp, struct scsi_cmnd *cmd, int resid)
+static inline void sym_set_cam_result_ok(struct sym_ccb *cp, struct scsi_cmnd *cmd, int resid)
 {
-	cmd->resid = resid;
+	scsi_set_resid(cmd, resid);
 	cmd->result = (((DID_OK) << 16) + ((cp->ssss_status) & 0x7f));
 }
 void sym_set_cam_result_error(struct sym_hcb *np, struct sym_ccb *cp, int resid);
@@ -292,9 +263,8 @@ void sym_set_cam_result_error(struct sym_hcb *np, struct sym_ccb *cp, int resid)
 void sym_xpt_done(struct sym_hcb *np, struct scsi_cmnd *ccb);
 #define sym_print_addr(cmd, arg...) dev_info(&cmd->device->sdev_gendev , ## arg)
 void sym_xpt_async_bus_reset(struct sym_hcb *np);
-void sym_xpt_async_sent_bdr(struct sym_hcb *np, int target);
 int  sym_setup_data_and_start (struct sym_hcb *np, struct scsi_cmnd *csio, struct sym_ccb *cp);
-void sym_log_bus_error(struct sym_hcb *np);
-void sym_sniff_inquiry(struct sym_hcb *np, struct scsi_cmnd *cmd, int resid);
+void sym_log_bus_error(struct Scsi_Host *);
+void sym_dump_registers(struct Scsi_Host *);
 
 #endif /* SYM_GLUE_H */

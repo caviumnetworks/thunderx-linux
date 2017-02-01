@@ -6,14 +6,16 @@
  *	in1:	source address
  *	in2:	number of bytes to copy
  * Output:
- * 	0 if success, or number of byte NOT copied if error occurred.
+ *	for memcpy:    return dest
+ * 	for copy_user: return 0 if success,
+ *		       or number of byte NOT copied if error occurred.
  *
  * Copyright (C) 2002 Intel Corp.
  * Copyright (C) 2002 Ken Chen <kenneth.w.chen@intel.com>
  */
-#include <linux/config.h>
 #include <asm/asmmacro.h>
 #include <asm/page.h>
+#include <asm/export.h>
 
 #define EK(y...) EX(y)
 
@@ -73,8 +75,11 @@ GLOBAL_ENTRY(memcpy)
 	and	r28=0x7,in0
 	and	r29=0x7,in1
 	mov	f6=f0
+	mov	retval=in0
 	br.cond.sptk .common_code
 	;;
+END(memcpy)
+EXPORT_SYMBOL(memcpy)
 GLOBAL_ENTRY(__copy_user)
 	.prologue
 // check dest alignment
@@ -83,7 +88,7 @@ GLOBAL_ENTRY(__copy_user)
 	mov	f6=f1
 	mov	saved_in0=in0	// save dest pointer
 	mov	saved_in1=in1	// save src pointer
-	mov	saved_in2=in2	// save len
+	mov	retval=r0	// initialize return value
 	;;
 .common_code:
 	cmp.gt	p15,p0=8,in2	// check for small size
@@ -91,7 +96,7 @@ GLOBAL_ENTRY(__copy_user)
 	cmp.ne	p14,p0=0,r29	// check src alignment
 	add	src0=0,in1
 	sub	r30=8,r28	// for .align_dest
-	mov	retval=r0	// initialize return value
+	mov	saved_in2=in2	// save len
 	;;
 	add	dst0=0,in0
 	add	dst1=1,in0	// dest odd index
@@ -300,7 +305,7 @@ EK(.ex_handler,	(p[D])	st8 [dst1] = t15, 4*8)
 	add	src_pre_mem=0,src0	// prefetch src pointer
 	add	dst_pre_mem=0,dst0	// prefetch dest pointer
 	and	src0=-8,src0		// 1st src pointer
-(p7)	mov	ar.lc = r21
+(p7)	mov	ar.lc = cnt
 (p8)	mov	ar.lc = r0
 	;;
 	TEXT_ALIGN(32)
@@ -524,7 +529,6 @@ EK(.ex_handler,  (p17)	st8	[dst1]=r39,8);						\
 #undef B
 #undef C
 #undef D
-END(memcpy)
 
 /*
  * Due to lack of local tag support in gcc 2.x assembler, it is not clear which
@@ -625,7 +629,10 @@ END(memcpy)
 	clrrrb
 	;;
 	alloc	saved_pfs_stack=ar.pfs,3,3,3,0
+	cmp.lt	p8,p0=A,r0
 	sub	B = dst0, saved_in0	// how many byte copied so far
+	;;
+(p8)	mov	A = 0;			// A shouldn't be negative, cap it
 	;;
 	sub	C = A, B
 	sub	D = saved_in2, A
@@ -659,3 +666,4 @@ END(memcpy)
 
 /* end of McKinley specific optimization */
 END(__copy_user)
+EXPORT_SYMBOL(__copy_user)

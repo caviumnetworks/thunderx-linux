@@ -8,26 +8,28 @@
  *
  */
 
-#include <linux/config.h>
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/time.h>
 #include <linux/errno.h>
 #include <linux/socket.h>
 #include <linux/fcntl.h>
 #include <linux/stat.h>
+#include <linux/string.h>
 #include <asm/uaccess.h>
 #include <linux/in.h>
 #include <linux/net.h>
 #include <linux/mm.h>
 #include <linux/netdevice.h>
 #include <linux/signal.h>
+#include <linux/slab.h>
 #include <net/scm.h>
 #include <net/sock.h>
 #include <linux/ipx.h>
 #include <linux/poll.h>
 #include <linux/file.h>
 
-#include <linux/ncp_fs.h>
+#include "ncp_fs.h"
 
 #include "ncpsign_kernel.h"
 
@@ -56,10 +58,11 @@ static int _send(struct socket *sock, const void *buff, int len)
 struct ncp_request_reply {
 	struct list_head req;
 	wait_queue_head_t wq;
-	struct ncp_reply_header* reply_buf;
+	atomic_t refs;
+	unsigned char* reply_buf;
 	size_t datalen;
 	int result;
-	enum { RQ_DONE, RQ_INPROGRESS, RQ_QUEUED, RQ_IDLE } status;
+	enum { RQ_DONE, RQ_INPROGRESS, RQ_QUEUED, RQ_IDLE, RQ_ABANDONED } status;
 	struct kvec* tx_ciov;
 	size_t tx_totallen;
 	size_t tx_iovlen;
@@ -68,11 +71,37 @@ struct ncp_request_reply {
 	u_int32_t sign[6];
 };
 
-void ncp_tcp_data_ready(struct sock *sk, int len)
+static inline struct ncp_request_reply* ncp_alloc_req(void)
+{
+	struct ncp_request_reply *req;
+
+	req = kmalloc(sizeof(struct ncp_request_reply), GFP_KERNEL);
+	if (!req)
+		return NULL;
+
+	init_waitqueue_head(&req->wq);
+	atomic_set(&req->refs, (1));
+	req->status = RQ_IDLE;
+
+	return req;
+}
+
+static void ncp_req_get(struct ncp_request_reply *req)
+{
+	atomic_inc(&req->refs);
+}
+
+static void ncp_req_put(struct ncp_request_reply *req)
+{
+	if (atomic_dec_and_test(&req->refs))
+		kfree(req);
+}
+
+void ncp_tcp_data_ready(struct sock *sk)
 {
 	struct ncp_server *server = sk->sk_user_data;
 
-	server->data_ready(sk, len);
+	server->data_ready(sk);
 	schedule_work(&server->rcv.tq);
 }
 
@@ -102,14 +131,17 @@ void ncpdgram_timeout_call(unsigned long v)
 	schedule_work(&server->timeout_tq);
 }
 
-static inline void ncp_finish_request(struct ncp_request_reply *req, int result)
+static inline void ncp_finish_request(struct ncp_server *server, struct ncp_request_reply *req, int result)
 {
 	req->result = result;
+	if (req->status != RQ_ABANDONED)
+		memcpy(req->reply_buf, server->rxbuf, req->datalen);
 	req->status = RQ_DONE;
 	wake_up_all(&req->wq);
+	ncp_req_put(req);
 }
 
-static void __abort_ncp_connection(struct ncp_server *server, struct ncp_request_reply *aborted, int err)
+static void __abort_ncp_connection(struct ncp_server *server)
 {
 	struct ncp_request_reply *req;
 
@@ -119,31 +151,19 @@ static void __abort_ncp_connection(struct ncp_server *server, struct ncp_request
 		req = list_entry(server->tx.requests.next, struct ncp_request_reply, req);
 		
 		list_del_init(&req->req);
-		if (req == aborted) {
-			ncp_finish_request(req, err);
-		} else {
-			ncp_finish_request(req, -EIO);
-		}
+		ncp_finish_request(server, req, -EIO);
 	}
 	req = server->rcv.creq;
 	if (req) {
 		server->rcv.creq = NULL;
-		if (req == aborted) {
-			ncp_finish_request(req, err);
-		} else {
-			ncp_finish_request(req, -EIO);
-		}
+		ncp_finish_request(server, req, -EIO);
 		server->rcv.ptr = NULL;
 		server->rcv.state = 0;
 	}
 	req = server->tx.creq;
 	if (req) {
 		server->tx.creq = NULL;
-		if (req == aborted) {
-			ncp_finish_request(req, err);
-		} else {
-			ncp_finish_request(req, -EIO);
-		}
+		ncp_finish_request(server, req, -EIO);
 	}
 }
 
@@ -161,24 +181,26 @@ static inline void __ncp_abort_request(struct ncp_server *server, struct ncp_req
 			break;
 		case RQ_QUEUED:
 			list_del_init(&req->req);
-			ncp_finish_request(req, err);
+			ncp_finish_request(server, req, err);
 			break;
 		case RQ_INPROGRESS:
-			__abort_ncp_connection(server, req, err);
+			req->status = RQ_ABANDONED;
+			break;
+		case RQ_ABANDONED:
 			break;
 	}
 }
 
 static inline void ncp_abort_request(struct ncp_server *server, struct ncp_request_reply *req, int err)
 {
-	down(&server->rcv.creq_sem);
+	mutex_lock(&server->rcv.creq_mutex);
 	__ncp_abort_request(server, req, err);
-	up(&server->rcv.creq_sem);
+	mutex_unlock(&server->rcv.creq_mutex);
 }
 
 static inline void __ncptcp_abort(struct ncp_server *server)
 {
-	__abort_ncp_connection(server, NULL, 0);
+	__abort_ncp_connection(server);
 }
 
 static int ncpdgram_send(struct socket *sock, struct ncp_request_reply *req)
@@ -210,7 +232,7 @@ static void __ncptcp_try_send(struct ncp_server *server)
 		return;
 
 	if (result < 0) {
-		printk(KERN_ERR "ncpfs: tcp: Send failed: %d\n", result);
+		pr_err("tcp: Send failed: %d\n", result);
 		__ncp_abort_request(server, rq, result);
 		return;
 	}
@@ -295,6 +317,11 @@ static void ncptcp_start_request(struct ncp_server *server, struct ncp_request_r
 
 static inline void __ncp_start_request(struct ncp_server *server, struct ncp_request_reply *req)
 {
+	/* we copy the data so that we do not depend on the caller
+	   staying alive */
+	memcpy(server->txbuf, req->tx_iov[1].iov_base, req->tx_iov[1].iov_len);
+	req->tx_iov[1].iov_base = server->txbuf;
+
 	if (server->ncp_sock->type == SOCK_STREAM)
 		ncptcp_start_request(server, req);
 	else
@@ -303,20 +330,21 @@ static inline void __ncp_start_request(struct ncp_server *server, struct ncp_req
 
 static int ncp_add_request(struct ncp_server *server, struct ncp_request_reply *req)
 {
-	down(&server->rcv.creq_sem);
+	mutex_lock(&server->rcv.creq_mutex);
 	if (!ncp_conn_valid(server)) {
-		up(&server->rcv.creq_sem);
-		printk(KERN_ERR "ncpfs: tcp: Server died\n");
+		mutex_unlock(&server->rcv.creq_mutex);
+		pr_err("tcp: Server died\n");
 		return -EIO;
 	}
+	ncp_req_get(req);
 	if (server->tx.creq || server->rcv.creq) {
 		req->status = RQ_QUEUED;
 		list_add_tail(&req->req, &server->tx.requests);
-		up(&server->rcv.creq_sem);
+		mutex_unlock(&server->rcv.creq_mutex);
 		return 0;
 	}
 	__ncp_start_request(server, req);
-	up(&server->rcv.creq_sem);
+	mutex_unlock(&server->rcv.creq_mutex);
 	return 0;
 }
 
@@ -351,9 +379,10 @@ static void info_server(struct ncp_server *server, unsigned int id, const void *
 	}
 }
 
-void ncpdgram_rcv_proc(void *s)
+void ncpdgram_rcv_proc(struct work_struct *work)
 {
-	struct ncp_server *server = s;
+	struct ncp_server *server =
+		container_of(work, struct ncp_server, rcv.tq);
 	struct socket* sock;
 	
 	sock = server->ncp_sock;
@@ -377,15 +406,15 @@ void ncpdgram_rcv_proc(void *s)
 				}
 				result = _recv(sock, buf, sizeof(buf), MSG_DONTWAIT);
 				if (result < 0) {
-					DPRINTK("recv failed with %d\n", result);
+					ncp_dbg(1, "recv failed with %d\n", result);
 					continue;
 				}
 				if (result < 10) {
-					DPRINTK("too short (%u) watchdog packet\n", result);
+					ncp_dbg(1, "too short (%u) watchdog packet\n", result);
 					continue;
 				}
 				if (buf[9] != '?') {
-					DPRINTK("bad signature (%02X) in watchdog packet\n", buf[9]);
+					ncp_dbg(1, "bad signature (%02X) in watchdog packet\n", buf[9]);
 					continue;
 				}
 				buf[9] = 'Y';
@@ -400,7 +429,7 @@ void ncpdgram_rcv_proc(void *s)
 				info_server(server, 0, server->unexpected_packet.data, result);
 				continue;
 			}
-			down(&server->rcv.creq_sem);		
+			mutex_lock(&server->rcv.creq_mutex);
 			req = server->rcv.creq;
 			if (req && (req->tx_type == NCP_ALLOC_SLOT_REQUEST || (server->sequence == reply.sequence && 
 					server->connection == get_conn_number(&reply)))) {
@@ -409,7 +438,7 @@ void ncpdgram_rcv_proc(void *s)
 					server->timeout_last = NCP_MAX_RPC_TIMEOUT;
 					mod_timer(&server->timeout_tm, jiffies + NCP_MAX_RPC_TIMEOUT);
 				} else if (reply.type == NCP_REPLY) {
-					result = _recv(sock, (void*)req->reply_buf, req->datalen, MSG_DONTWAIT);
+					result = _recv(sock, server->rxbuf, req->datalen, MSG_DONTWAIT);
 #ifdef CONFIG_NCPFS_PACKET_SIGNING
 					if (result >= 0 && server->sign_active && req->tx_type != NCP_DEALLOC_SLOT_REQUEST) {
 						if (result < 8 + 8) {
@@ -419,8 +448,8 @@ void ncpdgram_rcv_proc(void *s)
 							
 							result -= 8;
 							hdrl = sock->sk->sk_family == AF_INET ? 8 : 6;
-							if (sign_verify_reply(server, ((char*)req->reply_buf) + hdrl, result - hdrl, cpu_to_le32(result), ((char*)req->reply_buf) + result)) {
-								printk(KERN_INFO "ncpfs: Signature violation\n");
+							if (sign_verify_reply(server, server->rxbuf + hdrl, result - hdrl, cpu_to_le32(result), server->rxbuf + result)) {
+								pr_info("Signature violation\n");
 								result = -EIO;
 							}
 						}
@@ -428,13 +457,13 @@ void ncpdgram_rcv_proc(void *s)
 #endif
 					del_timer(&server->timeout_tm);
 				     	server->rcv.creq = NULL;
-					ncp_finish_request(req, result);
+					ncp_finish_request(server, req, result);
 					__ncp_next_request(server);
-					up(&server->rcv.creq_sem);
+					mutex_unlock(&server->rcv.creq_mutex);
 					continue;
 				}
 			}
-			up(&server->rcv.creq_sem);
+			mutex_unlock(&server->rcv.creq_mutex);
 		}
 drop:;		
 		_recv(sock, &reply, sizeof(reply), MSG_DONTWAIT);
@@ -469,18 +498,13 @@ static void __ncpdgram_timeout_proc(struct ncp_server *server)
 	}
 }
 
-void ncpdgram_timeout_proc(void *s)
+void ncpdgram_timeout_proc(struct work_struct *work)
 {
-	struct ncp_server *server = s;
-	down(&server->rcv.creq_sem);
+	struct ncp_server *server =
+		container_of(work, struct ncp_server, timeout_tq);
+	mutex_lock(&server->rcv.creq_mutex);
 	__ncpdgram_timeout_proc(server);
-	up(&server->rcv.creq_sem);
-}
-
-static inline void ncp_init_req(struct ncp_request_reply* req)
-{
-	init_waitqueue_head(&req->wq);
-	req->status = RQ_IDLE;
+	mutex_unlock(&server->rcv.creq_mutex);
 }
 
 static int do_tcp_rcv(struct ncp_server *server, void *buffer, size_t len)
@@ -501,7 +525,7 @@ static int do_tcp_rcv(struct ncp_server *server, void *buffer, size_t len)
 		return result;
 	}
 	if (result > len) {
-		printk(KERN_ERR "ncpfs: tcp: bug in recvmsg (%u > %Zu)\n", result, len);
+		pr_err("tcp: bug in recvmsg (%u > %Zu)\n", result, len);
 		return -EIO;			
 	}
 	return result;
@@ -529,9 +553,9 @@ static int __ncptcp_rcv_proc(struct ncp_server *server)
 					__ncptcp_abort(server);
 				}
 				if (result < 0) {
-					printk(KERN_ERR "ncpfs: tcp: error in recvmsg: %d\n", result);
+					pr_err("tcp: error in recvmsg: %d\n", result);
 				} else {
-					DPRINTK(KERN_ERR "ncpfs: tcp: EOF\n");
+					ncp_dbg(1, "tcp: EOF\n");
 				}
 				return -EIO;
 			}
@@ -543,20 +567,20 @@ static int __ncptcp_rcv_proc(struct ncp_server *server)
 		switch (server->rcv.state) {
 			case 0:
 				if (server->rcv.buf.magic != htonl(NCP_TCP_RCVD_MAGIC)) {
-					printk(KERN_ERR "ncpfs: tcp: Unexpected reply type %08X\n", ntohl(server->rcv.buf.magic));
+					pr_err("tcp: Unexpected reply type %08X\n", ntohl(server->rcv.buf.magic));
 					__ncptcp_abort(server);
 					return -EIO;
 				}
 				datalen = ntohl(server->rcv.buf.len) & 0x0FFFFFFF;
 				if (datalen < 10) {
-					printk(KERN_ERR "ncpfs: tcp: Unexpected reply len %d\n", datalen);
+					pr_err("tcp: Unexpected reply len %d\n", datalen);
 					__ncptcp_abort(server);
 					return -EIO;
 				}
 #ifdef CONFIG_NCPFS_PACKET_SIGNING				
 				if (server->sign_active) {
 					if (datalen < 18) {
-						printk(KERN_ERR "ncpfs: tcp: Unexpected reply len %d\n", datalen);
+						pr_err("tcp: Unexpected reply len %d\n", datalen);
 						__ncptcp_abort(server);
 						return -EIO;
 					}
@@ -581,7 +605,7 @@ cont:;
 						server->rcv.len = datalen - 10;
 						break;
 					}					
-					DPRINTK("ncpfs: tcp: Unexpected NCP type %02X\n", type);
+					ncp_dbg(1, "tcp: Unexpected NCP type %02X\n", type);
 skipdata2:;
 					server->rcv.state = 2;
 skipdata:;
@@ -591,17 +615,17 @@ skipdata:;
 				}
 				req = server->rcv.creq;
 				if (!req) {
-					DPRINTK(KERN_ERR "ncpfs: Reply without appropriate request\n");
+					ncp_dbg(1, "Reply without appropriate request\n");
 					goto skipdata2;
 				}
 				if (datalen > req->datalen + 8) {
-					printk(KERN_ERR "ncpfs: tcp: Unexpected reply len %d (expected at most %Zd)\n", datalen, req->datalen + 8);
+					pr_err("tcp: Unexpected reply len %d (expected at most %Zd)\n", datalen, req->datalen + 8);
 					server->rcv.state = 3;
 					goto skipdata;
 				}
 				req->datalen = datalen - 8;
-				req->reply_buf->type = NCP_REPLY;
-				server->rcv.ptr = (unsigned char*)(req->reply_buf) + 2;
+				((struct ncp_reply_header*)server->rxbuf)->type = NCP_REPLY;
+				server->rcv.ptr = server->rxbuf + 2;
 				server->rcv.len = datalen - 10;
 				server->rcv.state = 1;
 				break;
@@ -614,27 +638,27 @@ skipdata:;
 			case 1:
 				req = server->rcv.creq;
 				if (req->tx_type != NCP_ALLOC_SLOT_REQUEST) {
-					if (req->reply_buf->sequence != server->sequence) {
-						printk(KERN_ERR "ncpfs: tcp: Bad sequence number\n");
+					if (((struct ncp_reply_header*)server->rxbuf)->sequence != server->sequence) {
+						pr_err("tcp: Bad sequence number\n");
 						__ncp_abort_request(server, req, -EIO);
 						return -EIO;
 					}
-					if ((req->reply_buf->conn_low | (req->reply_buf->conn_high << 8)) != server->connection) {
-						printk(KERN_ERR "ncpfs: tcp: Connection number mismatch\n");
+					if ((((struct ncp_reply_header*)server->rxbuf)->conn_low | (((struct ncp_reply_header*)server->rxbuf)->conn_high << 8)) != server->connection) {
+						pr_err("tcp: Connection number mismatch\n");
 						__ncp_abort_request(server, req, -EIO);
 						return -EIO;
 					}
 				}
 #ifdef CONFIG_NCPFS_PACKET_SIGNING				
 				if (server->sign_active && req->tx_type != NCP_DEALLOC_SLOT_REQUEST) {
-					if (sign_verify_reply(server, (unsigned char*)(req->reply_buf) + 6, req->datalen - 6, cpu_to_be32(req->datalen + 16), &server->rcv.buf.type)) {
-						printk(KERN_ERR "ncpfs: tcp: Signature violation\n");
+					if (sign_verify_reply(server, server->rxbuf + 6, req->datalen - 6, cpu_to_be32(req->datalen + 16), &server->rcv.buf.type)) {
+						pr_err("tcp: Signature violation\n");
 						__ncp_abort_request(server, req, -EIO);
 						return -EIO;
 					}
 				}
 #endif				
-				ncp_finish_request(req, req->datalen);
+				ncp_finish_request(server, req, req->datalen);
 			nextreq:;
 				__ncp_next_request(server);
 			case 2:
@@ -644,7 +668,7 @@ skipdata:;
 				server->rcv.state = 0;
 				break;
 			case 3:
-				ncp_finish_request(server->rcv.creq, -EIO);
+				ncp_finish_request(server, server->rcv.creq, -EIO);
 				goto nextreq;
 			case 5:
 				info_server(server, 0, server->unexpected_packet.data, server->unexpected_packet.len);
@@ -653,47 +677,60 @@ skipdata:;
 	}
 }
 
-void ncp_tcp_rcv_proc(void *s)
+void ncp_tcp_rcv_proc(struct work_struct *work)
 {
-	struct ncp_server *server = s;
+	struct ncp_server *server =
+		container_of(work, struct ncp_server, rcv.tq);
 
-	down(&server->rcv.creq_sem);
+	mutex_lock(&server->rcv.creq_mutex);
 	__ncptcp_rcv_proc(server);
-	up(&server->rcv.creq_sem);
+	mutex_unlock(&server->rcv.creq_mutex);
 }
 
-void ncp_tcp_tx_proc(void *s)
+void ncp_tcp_tx_proc(struct work_struct *work)
 {
-	struct ncp_server *server = s;
+	struct ncp_server *server =
+		container_of(work, struct ncp_server, tx.tq);
 	
-	down(&server->rcv.creq_sem);
+	mutex_lock(&server->rcv.creq_mutex);
 	__ncptcp_try_send(server);
-	up(&server->rcv.creq_sem);
+	mutex_unlock(&server->rcv.creq_mutex);
 }
 
 static int do_ncp_rpc_call(struct ncp_server *server, int size,
-		struct ncp_reply_header* reply_buf, int max_reply_size)
+		unsigned char* reply_buf, int max_reply_size)
 {
 	int result;
-	struct ncp_request_reply req;
+	struct ncp_request_reply *req;
 
-	ncp_init_req(&req);
-	req.reply_buf = reply_buf;
-	req.datalen = max_reply_size;
-	req.tx_iov[1].iov_base = server->packet;
-	req.tx_iov[1].iov_len = size;
-	req.tx_iovlen = 1;
-	req.tx_totallen = size;
-	req.tx_type = *(u_int16_t*)server->packet;
+	req = ncp_alloc_req();
+	if (!req)
+		return -ENOMEM;
 
-	result = ncp_add_request(server, &req);
-	if (result < 0) {
-		return result;
+	req->reply_buf = reply_buf;
+	req->datalen = max_reply_size;
+	req->tx_iov[1].iov_base = server->packet;
+	req->tx_iov[1].iov_len = size;
+	req->tx_iovlen = 1;
+	req->tx_totallen = size;
+	req->tx_type = *(u_int16_t*)server->packet;
+
+	result = ncp_add_request(server, req);
+	if (result < 0)
+		goto out;
+
+	if (wait_event_interruptible(req->wq, req->status == RQ_DONE)) {
+		ncp_abort_request(server, req, -EINTR);
+		result = -EINTR;
+		goto out;
 	}
-	if (wait_event_interruptible(req.wq, req.status == RQ_DONE)) {
-		ncp_abort_request(server, &req, -EIO);
-	}
-	return req.result;
+
+	result = req->result;
+
+out:
+	ncp_req_put(req);
+
+	return result;
 }
 
 /*
@@ -706,11 +743,10 @@ static int ncp_do_request(struct ncp_server *server, int size,
 	int result;
 
 	if (server->lock == 0) {
-		printk(KERN_ERR "ncpfs: Server not locked!\n");
+		pr_err("Server not locked!\n");
 		return -EIO;
 	}
 	if (!ncp_conn_valid(server)) {
-		printk(KERN_ERR "ncpfs: Connection invalid!\n");
 		return -EIO;
 	}
 	{
@@ -746,13 +782,8 @@ static int ncp_do_request(struct ncp_server *server, int size,
 		spin_unlock_irqrestore(&current->sighand->siglock, flags);
 	}
 
-	DDPRINTK("do_ncp_rpc_call returned %d\n", result);
+	ncp_dbg(2, "do_ncp_rpc_call returned %d\n", result);
 
-	if (result < 0) {
-		/* There was a problem with I/O, so the connections is
-		 * no longer usable. */
-		ncp_invalidate_conn(server);
-	}
 	return result;
 }
 
@@ -781,7 +812,7 @@ int ncp_request2(struct ncp_server *server, int function,
 
 	result = ncp_do_request(server, server->current_size, reply, size);
 	if (result < 0) {
-		DPRINTK("ncp_request_error: %d\n", result);
+		ncp_dbg(1, "ncp_request_error: %d\n", result);
 		goto out;
 	}
 	server->completion = reply->completion_code;
@@ -792,7 +823,7 @@ int ncp_request2(struct ncp_server *server, int function,
 	result = reply->completion_code;
 
 	if (result != 0)
-		PPRINTK("ncp_request: completion code=%x\n", result);
+		ncp_vdbg("completion code=%x\n", result);
 out:
 	return result;
 }
@@ -833,18 +864,18 @@ int ncp_disconnect(struct ncp_server *server)
 
 void ncp_lock_server(struct ncp_server *server)
 {
-	down(&server->sem);
+	mutex_lock(&server->mutex);
 	if (server->lock)
-		printk(KERN_WARNING "ncp_lock_server: was locked!\n");
+		pr_warn("%s: was locked!\n", __func__);
 	server->lock = 1;
 }
 
 void ncp_unlock_server(struct ncp_server *server)
 {
 	if (!server->lock) {
-		printk(KERN_WARNING "ncp_unlock_server: was not locked!\n");
+		pr_warn("%s: was not locked!\n", __func__);
 		return;
 	}
 	server->lock = 0;
-	up(&server->sem);
+	mutex_unlock(&server->mutex);
 }

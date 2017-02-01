@@ -1,18 +1,13 @@
-config ICST525
-	bool
-
-config ICST307
+config ICST
 	bool
 
 config SA1111
 	bool
-	select DMABOUNCE
+	select DMABOUNCE if !ARCH_PXA
 
 config DMABOUNCE
 	bool
-
-config TIMER_ACORN
-	bool
+	select ZONE_DMA
 
 config SHARP_LOCOMO
 	bool

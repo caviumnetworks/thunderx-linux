@@ -13,7 +13,6 @@
 #ifndef _LINUX_VT_BUFFER_H_
 #define _LINUX_VT_BUFFER_H_
 
-#include <linux/config.h>
 
 #if defined(CONFIG_VGA_CONSOLE) || defined(CONFIG_MDA_CONSOLE)
 #include <asm/vga.h>
@@ -22,10 +21,6 @@
 #ifndef VT_BUF_HAVE_RW
 #define scr_writew(val, addr) (*(addr) = (val))
 #define scr_readw(addr) (*(addr))
-#define scr_memcpyw(d, s, c) memcpy(d, s, c)
-#define scr_memmovew(d, s, c) memmove(d, s, c)
-#define VT_BUF_HAVE_MEMCPYW
-#define VT_BUF_HAVE_MEMMOVEW
 #endif
 
 #ifndef VT_BUF_HAVE_MEMSETW

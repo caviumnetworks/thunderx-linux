@@ -9,14 +9,11 @@
  *	David Mosberger-Tang, Martin Mares
  */
 
-#include <linux/config.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/zorro.h>
 
-
-#ifdef CONFIG_ZORRO_NAMES
 
 struct zorro_prod_info {
 	__u16 prod;
@@ -49,13 +46,13 @@ struct zorro_manuf_info {
 #include "devlist.h"
 
 static struct zorro_manuf_info __initdata zorro_manuf_list[] = {
-#define MANUF( manuf, name )		{ 0x##manuf, sizeof(__prods_##manuf) / sizeof(struct zorro_prod_info), __manufstr_##manuf, __prods_##manuf },
+#define MANUF( manuf, name )		{ 0x##manuf, ARRAY_SIZE(__prods_##manuf), __manufstr_##manuf, __prods_##manuf },
 #define ENDMANUF()
 #define PRODUCT( manuf, prod, name )
 #include "devlist.h"
 };
 
-#define MANUFS (sizeof(zorro_manuf_list)/sizeof(struct zorro_manuf_info))
+#define MANUFS ARRAY_SIZE(zorro_manuf_list)
 
 void __init zorro_name_device(struct zorro_dev *dev)
 {
@@ -70,7 +67,6 @@ void __init zorro_name_device(struct zorro_dev *dev)
 	} while (--i);
 
 	/* Couldn't find either the manufacturer nor the product */
-	sprintf(name, "Zorro device %08x", dev->id);
 	return;
 
 	match_manuf: {
@@ -99,11 +95,3 @@ void __init zorro_name_device(struct zorro_dev *dev)
 		}
 	}
 }
-
-#else
-
-void __init zorro_name_device(struct zorro_dev *dev)
-{
-}
-
-#endif

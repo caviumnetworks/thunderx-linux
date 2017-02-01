@@ -21,11 +21,12 @@
  * (at your option) any later version.
  *
  */
+#include <crypto/internal/hash.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mm.h>
-#include <asm/scatterlist.h>
-#include <linux/crypto.h>
+#include <asm/byteorder.h>
+#include <linux/types.h>
 
 #define TGR192_DIGEST_SIZE 24
 #define TGR160_DIGEST_SIZE 20
@@ -467,18 +468,10 @@ static void tgr192_transform(struct tgr192_ctx *tctx, const u8 * data)
 	u64 a, b, c, aa, bb, cc;
 	u64 x[8];
 	int i;
-	const u8 *ptr = data;
+	const __le64 *ptr = (const __le64 *)data;
 
-	for (i = 0; i < 8; i++, ptr += 8) {
-		x[i] = (((u64)ptr[7] ) << 56) ^
-		(((u64)ptr[6] & 0xffL) << 48) ^
-		(((u64)ptr[5] & 0xffL) << 40) ^
-		(((u64)ptr[4] & 0xffL) << 32) ^
-		(((u64)ptr[3] & 0xffL) << 24) ^
-		(((u64)ptr[2] & 0xffL) << 16) ^
-		(((u64)ptr[1] & 0xffL) <<  8) ^
-		(((u64)ptr[0] & 0xffL)      );
-	}
+	for (i = 0; i < 8; i++)
+		x[i] = le64_to_cpu(ptr[i]);
 
 	/* save */
 	a = aa = tctx->a;
@@ -502,24 +495,26 @@ static void tgr192_transform(struct tgr192_ctx *tctx, const u8 * data)
 	tctx->c = c;
 }
 
-static void tgr192_init(void *ctx)
+static int tgr192_init(struct shash_desc *desc)
 {
-	struct tgr192_ctx *tctx = ctx;
+	struct tgr192_ctx *tctx = shash_desc_ctx(desc);
 
-	memset (tctx->hash, 0, 64);
 	tctx->a = 0x0123456789abcdefULL;
 	tctx->b = 0xfedcba9876543210ULL;
 	tctx->c = 0xf096a5b4c3b2e187ULL;
 	tctx->nblocks = 0;
 	tctx->count = 0;
+
+	return 0;
 }
 
 
 /* Update the message digest with the contents
  * of INBUF with length INLEN. */
-static void tgr192_update(void *ctx, const u8 * inbuf, unsigned int len)
+static int tgr192_update(struct shash_desc *desc, const u8 *inbuf,
+			  unsigned int len)
 {
-	struct tgr192_ctx *tctx = ctx;
+	struct tgr192_ctx *tctx = shash_desc_ctx(desc);
 
 	if (tctx->count == 64) {	/* flush the buffer */
 		tgr192_transform(tctx, tctx->hash);
@@ -527,15 +522,15 @@ static void tgr192_update(void *ctx, const u8 * inbuf, unsigned int len)
 		tctx->nblocks++;
 	}
 	if (!inbuf) {
-		return;
+		return 0;
 	}
 	if (tctx->count) {
 		for (; len && tctx->count < 64; len--) {
 			tctx->hash[tctx->count++] = *inbuf++;
 		}
-		tgr192_update(tctx, NULL, 0);
+		tgr192_update(desc, NULL, 0);
 		if (!len) {
-			return;
+			return 0;
 		}
 
 	}
@@ -550,19 +545,22 @@ static void tgr192_update(void *ctx, const u8 * inbuf, unsigned int len)
 	for (; len && tctx->count < 64; len--) {
 		tctx->hash[tctx->count++] = *inbuf++;
 	}
+
+	return 0;
 }
 
 
 
 /* The routine terminates the computation */
-static void tgr192_final(void *ctx, u8 * out)
+static int tgr192_final(struct shash_desc *desc, u8 * out)
 {
-	struct tgr192_ctx *tctx = ctx;
+	struct tgr192_ctx *tctx = shash_desc_ctx(desc);
+	__be64 *dst = (__be64 *)out;
+	__be64 *be64p;
+	__le32 *le32p;
 	u32 t, msb, lsb;
-	u8 *p;
-	int i, j;
 
-	tgr192_update(tctx, NULL, 0); /* flush */ ;
+	tgr192_update(desc, NULL, 0); /* flush */ ;
 
 	msb = 0;
 	t = tctx->nblocks;
@@ -590,146 +588,100 @@ static void tgr192_final(void *ctx, u8 * out)
 		while (tctx->count < 64) {
 			tctx->hash[tctx->count++] = 0;
 		}
-		tgr192_update(tctx, NULL, 0); /* flush */ ;
+		tgr192_update(desc, NULL, 0); /* flush */ ;
 		memset(tctx->hash, 0, 56);    /* fill next block with zeroes */
 	}
 	/* append the 64 bit count */
-	tctx->hash[56] = lsb;
-	tctx->hash[57] = lsb >> 8;
-	tctx->hash[58] = lsb >> 16;
-	tctx->hash[59] = lsb >> 24;
-	tctx->hash[60] = msb;
-	tctx->hash[61] = msb >> 8;
-	tctx->hash[62] = msb >> 16;
-	tctx->hash[63] = msb >> 24;
+	le32p = (__le32 *)&tctx->hash[56];
+	le32p[0] = cpu_to_le32(lsb);
+	le32p[1] = cpu_to_le32(msb);
+
 	tgr192_transform(tctx, tctx->hash);
 
-	p = tctx->hash;
-	*p++ = tctx->a >> 56; *p++ = tctx->a >> 48; *p++ = tctx->a >> 40;
-	*p++ = tctx->a >> 32; *p++ = tctx->a >> 24; *p++ = tctx->a >> 16;
-	*p++ = tctx->a >>  8; *p++ = tctx->a;\
-	*p++ = tctx->b >> 56; *p++ = tctx->b >> 48; *p++ = tctx->b >> 40;
-	*p++ = tctx->b >> 32; *p++ = tctx->b >> 24; *p++ = tctx->b >> 16;
-	*p++ = tctx->b >>  8; *p++ = tctx->b;
-	*p++ = tctx->c >> 56; *p++ = tctx->c >> 48; *p++ = tctx->c >> 40;
-	*p++ = tctx->c >> 32; *p++ = tctx->c >> 24; *p++ = tctx->c >> 16;
-	*p++ = tctx->c >>  8; *p++ = tctx->c;
+	be64p = (__be64 *)tctx->hash;
+	dst[0] = be64p[0] = cpu_to_be64(tctx->a);
+	dst[1] = be64p[1] = cpu_to_be64(tctx->b);
+	dst[2] = be64p[2] = cpu_to_be64(tctx->c);
 
-
-	/* unpack the hash */
-	j = 7;
-	for (i = 0; i < 8; i++) {
-		out[j--] = (tctx->a >> 8 * i) & 0xff;
-	}
-	j = 15;
-	for (i = 0; i < 8; i++) {
-		out[j--] = (tctx->b >> 8 * i) & 0xff;
-	}
-	j = 23;
-	for (i = 0; i < 8; i++) {
-		out[j--] = (tctx->c >> 8 * i) & 0xff;
-	}
+	return 0;
 }
 
-static void tgr160_final(void *ctx, u8 * out)
+static int tgr160_final(struct shash_desc *desc, u8 * out)
 {
-	struct tgr192_ctx *wctx = ctx;
 	u8 D[64];
 
-	tgr192_final(wctx, D);
+	tgr192_final(desc, D);
 	memcpy(out, D, TGR160_DIGEST_SIZE);
-	memset(D, 0, TGR192_DIGEST_SIZE);
+	memzero_explicit(D, TGR192_DIGEST_SIZE);
+
+	return 0;
 }
 
-static void tgr128_final(void *ctx, u8 * out)
+static int tgr128_final(struct shash_desc *desc, u8 * out)
 {
-	struct tgr192_ctx *wctx = ctx;
 	u8 D[64];
 
-	tgr192_final(wctx, D);
+	tgr192_final(desc, D);
 	memcpy(out, D, TGR128_DIGEST_SIZE);
-	memset(D, 0, TGR192_DIGEST_SIZE);
+	memzero_explicit(D, TGR192_DIGEST_SIZE);
+
+	return 0;
 }
 
-static struct crypto_alg tgr192 = {
-	.cra_name = "tgr192",
-	.cra_flags = CRYPTO_ALG_TYPE_DIGEST,
-	.cra_blocksize = TGR192_BLOCK_SIZE,
-	.cra_ctxsize = sizeof(struct tgr192_ctx),
-	.cra_module = THIS_MODULE,
-	.cra_list = LIST_HEAD_INIT(tgr192.cra_list),
-	.cra_u = {.digest = {
-			     .dia_digestsize = TGR192_DIGEST_SIZE,
-			     .dia_init = tgr192_init,
-			     .dia_update = tgr192_update,
-			     .dia_final = tgr192_final}}
-};
+static struct shash_alg tgr_algs[3] = { {
+	.digestsize	=	TGR192_DIGEST_SIZE,
+	.init		=	tgr192_init,
+	.update		=	tgr192_update,
+	.final		=	tgr192_final,
+	.descsize	=	sizeof(struct tgr192_ctx),
+	.base		=	{
+		.cra_name	=	"tgr192",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	TGR192_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
+}, {
+	.digestsize	=	TGR160_DIGEST_SIZE,
+	.init		=	tgr192_init,
+	.update		=	tgr192_update,
+	.final		=	tgr160_final,
+	.descsize	=	sizeof(struct tgr192_ctx),
+	.base		=	{
+		.cra_name	=	"tgr160",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	TGR192_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
+}, {
+	.digestsize	=	TGR128_DIGEST_SIZE,
+	.init		=	tgr192_init,
+	.update		=	tgr192_update,
+	.final		=	tgr128_final,
+	.descsize	=	sizeof(struct tgr192_ctx),
+	.base		=	{
+		.cra_name	=	"tgr128",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	TGR192_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
+} };
 
-static struct crypto_alg tgr160 = {
-	.cra_name = "tgr160",
-	.cra_flags = CRYPTO_ALG_TYPE_DIGEST,
-	.cra_blocksize = TGR192_BLOCK_SIZE,
-	.cra_ctxsize = sizeof(struct tgr192_ctx),
-	.cra_module = THIS_MODULE,
-	.cra_list = LIST_HEAD_INIT(tgr160.cra_list),
-	.cra_u = {.digest = {
-			     .dia_digestsize = TGR160_DIGEST_SIZE,
-			     .dia_init = tgr192_init,
-			     .dia_update = tgr192_update,
-			     .dia_final = tgr160_final}}
-};
-
-static struct crypto_alg tgr128 = {
-	.cra_name = "tgr128",
-	.cra_flags = CRYPTO_ALG_TYPE_DIGEST,
-	.cra_blocksize = TGR192_BLOCK_SIZE,
-	.cra_ctxsize = sizeof(struct tgr192_ctx),
-	.cra_module = THIS_MODULE,
-	.cra_list = LIST_HEAD_INIT(tgr128.cra_list),
-	.cra_u = {.digest = {
-			     .dia_digestsize = TGR128_DIGEST_SIZE,
-			     .dia_init = tgr192_init,
-			     .dia_update = tgr192_update,
-			     .dia_final = tgr128_final}}
-};
-
-static int __init init(void)
+static int __init tgr192_mod_init(void)
 {
-	int ret = 0;
-
-	ret = crypto_register_alg(&tgr192);
-
-	if (ret < 0) {
-		goto out;
-	}
-
-	ret = crypto_register_alg(&tgr160);
-	if (ret < 0) {
-		crypto_unregister_alg(&tgr192);
-		goto out;
-	}
-
-	ret = crypto_register_alg(&tgr128);
-	if (ret < 0) {
-		crypto_unregister_alg(&tgr192);
-		crypto_unregister_alg(&tgr160);
-	}
-      out:
-	return ret;
+	return crypto_register_shashes(tgr_algs, ARRAY_SIZE(tgr_algs));
 }
 
-static void __exit fini(void)
+static void __exit tgr192_mod_fini(void)
 {
-	crypto_unregister_alg(&tgr192);
-	crypto_unregister_alg(&tgr160);
-	crypto_unregister_alg(&tgr128);
+	crypto_unregister_shashes(tgr_algs, ARRAY_SIZE(tgr_algs));
 }
 
-MODULE_ALIAS("tgr160");
-MODULE_ALIAS("tgr128");
+MODULE_ALIAS_CRYPTO("tgr192");
+MODULE_ALIAS_CRYPTO("tgr160");
+MODULE_ALIAS_CRYPTO("tgr128");
 
-module_init(init);
-module_exit(fini);
+module_init(tgr192_mod_init);
+module_exit(tgr192_mod_fini);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Tiger Message Digest Algorithm");

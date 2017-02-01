@@ -146,7 +146,7 @@ static void
 			       void *);
 static void
 	irnet_discovervalue_confirm(int,
-				    __u16, 
+				    __u16,
 				    struct ias_value *,
 				    void *);
 #ifdef DISCOVERY_EVENTS
@@ -159,14 +159,6 @@ static void
 				DISCOVERY_MODE,
 				void *);
 #endif
-/* -------------------------- PROC ENTRY -------------------------- */
-#ifdef CONFIG_PROC_FS
-static int
-	irnet_proc_read(char *,
-			char **,
-			off_t,
-			int);
-#endif /* CONFIG_PROC_FS */
 
 /**************************** VARIABLES ****************************/
 

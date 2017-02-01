@@ -3,14 +3,14 @@
 
 #include <net/act_api.h>
 
-struct ipt_entry_target;
+struct xt_entry_target;
 
-struct tcf_ipt
-{
-	tca_gen(ipt);
-	u32 hook;
-	char *tname;
-	struct ipt_entry_target *t;
+struct tcf_ipt {
+	struct tc_action	common;
+	u32			tcfi_hook;
+	char			*tcfi_tname;
+	struct xt_entry_target	*tcfi_t;
 };
+#define to_ipt(a) ((struct tcf_ipt *)a)
 
-#endif
+#endif /* __NET_TC_IPT_H */

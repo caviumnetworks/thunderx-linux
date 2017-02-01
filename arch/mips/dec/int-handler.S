@@ -1,24 +1,22 @@
 /*
- * arch/mips/dec/int-handler.S
- *
  * Copyright (C) 1995, 1996, 1997 Paul M. Antoine and Harald Koerfgen
- * Copyright (C) 2000, 2001, 2002, 2003  Maciej W. Rozycki
+ * Copyright (C) 2000, 2001, 2002, 2003, 2005  Maciej W. Rozycki
  *
- * Written by Ralf Baechle and Andreas Busse, modified for DECStation
+ * Written by Ralf Baechle and Andreas Busse, modified for DECstation
  * support by Paul Antoine and Harald Koerfgen.
  *
- * completly rewritten:
+ * completely rewritten:
  * Copyright (C) 1998 Harald Koerfgen
  *
  * Rewritten extensively for controller-driven IRQ support
  * by Maciej W. Rozycki.
  */
-#include <linux/config.h>
-#include <asm/asm.h>
-#include <asm/regdef.h>
-#include <asm/mipsregs.h>
-#include <asm/stackframe.h>
+
 #include <asm/addrspace.h>
+#include <asm/asm.h>
+#include <asm/mipsregs.h>
+#include <asm/regdef.h>
+#include <asm/stackframe.h>
 
 #include <asm/dec/interrupts.h>
 #include <asm/dec/ioasic_addrs.h>
@@ -28,11 +26,14 @@
 #include <asm/dec/kn02xa.h>
 #include <asm/dec/kn03.h>
 
+#define KN02_CSR_BASE		CKSEG1ADDR(KN02_SLOT_BASE + KN02_CSR)
+#define KN02XA_IOASIC_BASE	CKSEG1ADDR(KN02XA_SLOT_BASE + IOASIC_IOCTL)
+#define KN03_IOASIC_BASE	CKSEG1ADDR(KN03_SLOT_BASE + IOASIC_IOCTL)
 
 		.text
 		.set	noreorder
 /*
- * decstation_handle_int: Interrupt handler for DECStations
+ * plat_irq_dispatch: Interrupt handler for DECstations
  *
  * We follow the model in the Indy interrupt code by David Miller, where he
  * says: a lot of complication here is taken away because:
@@ -48,84 +49,80 @@
  * 3) Linux only thinks in terms of all IRQs on or all IRQs
  *    off, nothing in between like BSD spl() brain-damage.
  *
- * Furthermore, the IRQs on the DECStations look basically (barring
+ * Furthermore, the IRQs on the DECstations look basically (barring
  * software IRQs which we don't use at all) like...
  *
  * DS2100/3100's, aka kn01, aka Pmax:
  *
  *	MIPS IRQ	Source
- *      --------        ------
- *             0	Software (ignored)
- *             1        Software (ignored)
- *             2        SCSI
- *             3        Lance Ethernet
- *             4        DZ11 serial
- *             5        RTC
- *             6        Memory Controller
- *             7        FPU
+ *	--------	------
+ *	       0	Software (ignored)
+ *	       1	Software (ignored)
+ *	       2	SCSI
+ *	       3	Lance Ethernet
+ *	       4	DZ11 serial
+ *	       5	RTC
+ *	       6	Memory Controller & Video
+ *	       7	FPU
  *
  * DS5000/200, aka kn02, aka 3max:
  *
  *	MIPS IRQ	Source
- *      --------        ------
- *             0	Software (ignored)
- *             1        Software (ignored)
- *             2        TurboChannel
- *             3        RTC
- *             4        Reserved
- *             5        Memory Controller
- *             6        Reserved
- *             7        FPU
+ *	--------	------
+ *	       0	Software (ignored)
+ *	       1	Software (ignored)
+ *	       2	TurboChannel
+ *	       3	RTC
+ *	       4	Reserved
+ *	       5	Memory Controller
+ *	       6	Reserved
+ *	       7	FPU
  *
  * DS5000/1xx's, aka kn02ba, aka 3min:
  *
  *	MIPS IRQ	Source
- *      --------        ------
- *             0	Software (ignored)
- *             1        Software (ignored)
- *             2        TurboChannel Slot 0
- *             3        TurboChannel Slot 1
- *             4        TurboChannel Slot 2
- *             5        TurboChannel Slot 3 (ASIC)
- *             6        Halt button
- *             7        FPU/R4k timer
+ *	--------	------
+ *	       0	Software (ignored)
+ *	       1	Software (ignored)
+ *	       2	TurboChannel Slot 0
+ *	       3	TurboChannel Slot 1
+ *	       4	TurboChannel Slot 2
+ *	       5	TurboChannel Slot 3 (ASIC)
+ *	       6	Halt button
+ *	       7	FPU/R4k timer
  *
  * DS5000/2x's, aka kn02ca, aka maxine:
  *
  *	MIPS IRQ	Source
- *      --------        ------
- *             0	Software (ignored)
- *             1        Software (ignored)
- *             2        Periodic Interrupt (100usec)
- *             3        RTC
- *             4        I/O write timeout
- *             5        TurboChannel (ASIC)
- *             6        Halt Keycode from Access.Bus keyboard (CTRL-ALT-ENTER)
- *             7        FPU/R4k timer
+ *	--------	------
+ *	       0	Software (ignored)
+ *	       1	Software (ignored)
+ *	       2	Periodic Interrupt (100usec)
+ *	       3	RTC
+ *	       4	I/O write timeout
+ *	       5	TurboChannel (ASIC)
+ *	       6	Halt Keycode from Access.Bus keyboard (CTRL-ALT-ENTER)
+ *	       7	FPU/R4k timer
  *
  * DS5000/2xx's, aka kn03, aka 3maxplus:
  *
  *	MIPS IRQ	Source
- *      --------        ------
- *             0	Software (ignored)
- *             1        Software (ignored)
- *             2        System Board (ASIC)
- *             3        RTC
- *             4        Reserved
- *             5        Memory
- *             6        Halt Button
- *             7        FPU/R4k timer
+ *	--------	------
+ *	       0	Software (ignored)
+ *	       1	Software (ignored)
+ *	       2	System Board (ASIC)
+ *	       3	RTC
+ *	       4	Reserved
+ *	       5	Memory
+ *	       6	Halt Button
+ *	       7	FPU/R4k timer
  *
  * We handle the IRQ according to _our_ priority (see setup.c),
  * then we just return.  If multiple IRQs are pending then we will
  * just take another exception, big deal.
  */
 		.align	5
-		NESTED(decstation_handle_int, PT_SIZE, ra)
-		.set	noat
-		SAVE_ALL
-		CLI				# TEST: interrupts should be off
-		.set	at
+		NESTED(plat_irq_dispatch, PT_SIZE, ra)
 		.set	noreorder
 
 		/*
@@ -133,7 +130,7 @@
 		 */
 		mfc0	t0,CP0_CAUSE		# get pending interrupts
 		mfc0	t1,CP0_STATUS
-#ifdef CONFIG_MIPS32
+#ifdef CONFIG_32BIT
 		lw	t2,cpu_fpu_mask
 #endif
 		andi	t0,ST0_IM		# CAUSE.CE may be non-zero!
@@ -141,7 +138,7 @@
 
 		beqz	t0,spurious
 
-#ifdef CONFIG_MIPS32
+#ifdef CONFIG_32BIT
 		 and	t2,t0
 		bnez	t2,fpu			# handle FPU immediately
 #endif
@@ -149,7 +146,25 @@
 		/*
 		 * Find irq with highest priority
 		 */
-		 PTR_LA	t1,cpu_mask_nr_tbl
+		# open coded PTR_LA t1, cpu_mask_nr_tbl
+#if (_MIPS_SZPTR == 32)
+		# open coded la t1, cpu_mask_nr_tbl
+		lui	t1, %hi(cpu_mask_nr_tbl)
+		addiu	t1, %lo(cpu_mask_nr_tbl)
+
+#endif
+#if (_MIPS_SZPTR == 64)
+		# open coded dla t1, cpu_mask_nr_tbl
+		.set	push
+		.set	noat
+		lui	t1, %highest(cpu_mask_nr_tbl)
+		lui	AT, %hi(cpu_mask_nr_tbl)
+		daddiu	t1, t1, %higher(cpu_mask_nr_tbl)
+		daddiu	AT, AT, %lo(cpu_mask_nr_tbl)
+		dsll	t1, 32
+		daddu	t1, t1, AT
+		.set	pop
+#endif
 1:		lw	t2,(t1)
 		nop
 		and	t2,t0
@@ -198,7 +213,25 @@
 		/*
 		 * Find irq with highest priority
 		 */
-		 PTR_LA	t1,asic_mask_nr_tbl
+		# open coded PTR_LA t1,asic_mask_nr_tbl
+#if (_MIPS_SZPTR == 32)
+		# open coded la t1, asic_mask_nr_tbl
+		lui	t1, %hi(asic_mask_nr_tbl)
+		addiu	t1, %lo(asic_mask_nr_tbl)
+
+#endif
+#if (_MIPS_SZPTR == 64)
+		# open coded dla t1, asic_mask_nr_tbl
+		.set	push
+		.set	noat
+		lui	t1, %highest(asic_mask_nr_tbl)
+		lui	AT, %hi(asic_mask_nr_tbl)
+		daddiu	t1, t1, %higher(asic_mask_nr_tbl)
+		daddiu	AT, AT, %lo(asic_mask_nr_tbl)
+		dsll	t1, 32
+		daddu	t1, t1, AT
+		.set	pop
+#endif
 2:		lw	t2,(t1)
 		nop
 		and	t2,t0
@@ -265,22 +298,24 @@
 		 srlv	t3,t1,t2
 
 handle_it:
-		jal	do_IRQ
-		 move	a1,sp
-
-		j	ret_from_irq
+		j	dec_irq_dispatch
 		 nop
 
-#ifdef CONFIG_MIPS32
+#ifdef CONFIG_32BIT
 fpu:
+		lw	t0,fpu_kstat_irq
+		nop
+		lw	t1,(t0)
+		nop
+		addu	t1,1
 		j	handle_fpe_int
-		 nop
+		 sw	t1,(t0)
 #endif
 
 spurious:
 		j	spurious_interrupt
 		 nop
-		END(decstation_handle_int)
+		END(plat_irq_dispatch)
 
 /*
  * Generic unimplemented interrupt routines -- cpu_mask_nr_tbl

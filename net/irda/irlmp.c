@@ -18,13 +18,12 @@
  *     published by the Free Software Foundation; either version 2 of
  *     the License, or (at your option) any later version.
  *
- *     Neither Dag Brattli nor University of Tromsø admit liability nor
+ *     Neither Dag Brattli nor University of TromsÃ¸ admit liability nor
  *     provide warranty for any of this software. This material is
  *     provided "AS-IS" and at no charge.
  *
  ********************************************************************/
 
-#include <linux/config.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -44,6 +43,8 @@
 #include <net/irda/irlmp.h>
 #include <net/irda/irlmp_frame.h>
 
+#include <asm/unaligned.h>
+
 static __u8 irlmp_find_free_slsap(void);
 static int irlmp_slsap_inuse(__u8 slsap_sel);
 
@@ -53,12 +54,11 @@ struct irlmp_cb *irlmp = NULL;
 /* These can be altered by the sysctl interface */
 int  sysctl_discovery         = 0;
 int  sysctl_discovery_timeout = 3; /* 3 seconds by default */
-EXPORT_SYMBOL(sysctl_discovery_timeout);
 int  sysctl_discovery_slots   = 6; /* 6 slots by default */
 int  sysctl_lap_keepalive_time = LM_IDLE_TIMEOUT * 1000 / HZ;
 char sysctl_devname[65];
 
-const char *irlmp_reasons[] = {
+static const char *irlmp_reasons[] = {
 	"ERROR, NOT USED",
 	"LM_USER_REQUEST",
 	"LM_LAP_DISCONNECT",
@@ -66,8 +66,14 @@ const char *irlmp_reasons[] = {
 	"LM_LAP_RESET",
 	"LM_INIT_DISCONNECT",
 	"ERROR, NOT USED",
+	"UNKNOWN",
 };
-EXPORT_SYMBOL(irlmp_reasons);
+
+const char *irlmp_reason_str(LM_REASON reason)
+{
+	reason = min_t(size_t, reason, ARRAY_SIZE(irlmp_reasons) - 1);
+	return irlmp_reasons[reason];
+}
 
 /*
  * Function irlmp_init (void)
@@ -77,12 +83,10 @@ EXPORT_SYMBOL(irlmp_reasons);
  */
 int __init irlmp_init(void)
 {
-	IRDA_DEBUG(1, "%s()\n", __FUNCTION__);
 	/* Initialize the irlmp structure. */
-	irlmp = kmalloc( sizeof(struct irlmp_cb), GFP_KERNEL);
+	irlmp = kzalloc( sizeof(struct irlmp_cb), GFP_KERNEL);
 	if (irlmp == NULL)
 		return -ENOMEM;
-	memset(irlmp, 0, sizeof(struct irlmp_cb));
 
 	irlmp->magic = LMP_MAGIC;
 
@@ -105,9 +109,12 @@ int __init irlmp_init(void)
 	irlmp->last_lsap_sel = 0x0f; /* Reserved 0x00-0x0f */
 	strcpy(sysctl_devname, "Linux");
 
-	/* Do discovery every 3 seconds */
 	init_timer(&irlmp->discovery_timer);
-	irlmp_start_discovery_timer(irlmp, sysctl_discovery_timeout*HZ);
+
+	/* Do discovery every 3 seconds, conditionally */
+	if (sysctl_discovery)
+		irlmp_start_discovery_timer(irlmp,
+					    sysctl_discovery_timeout*HZ);
 
 	return 0;
 }
@@ -118,7 +125,7 @@ int __init irlmp_init(void)
  *    Remove IrLMP layer
  *
  */
-void __exit irlmp_cleanup(void) 
+void irlmp_cleanup(void)
 {
 	/* Check for main structure */
 	IRDA_ASSERT(irlmp != NULL, return;);
@@ -161,12 +168,9 @@ struct lsap_cb *irlmp_open_lsap(__u8 slsap_sel, notify_t *notify, __u8 pid)
 		return NULL;
 
 	/* Allocate new instance of a LSAP connection */
-	self = kmalloc(sizeof(struct lsap_cb), GFP_ATOMIC);
-	if (self == NULL) {
-		IRDA_ERROR("%s: can't allocate memory\n", __FUNCTION__);
+	self = kzalloc(sizeof(struct lsap_cb), GFP_ATOMIC);
+	if (self == NULL)
 		return NULL;
-	}
-	memset(self, 0, sizeof(struct lsap_cb));
 
 	self->magic = LMP_LSAP_MAGIC;
 	self->slsap_sel = slsap_sel;
@@ -202,8 +206,6 @@ EXPORT_SYMBOL(irlmp_open_lsap);
  */
 static void __irlmp_close_lsap(struct lsap_cb *self)
 {
-	IRDA_DEBUG(4, "%s()\n", __FUNCTION__);
-
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == LMP_LSAP_MAGIC, return;);
 
@@ -262,9 +264,8 @@ void irlmp_close_lsap(struct lsap_cb *self)
 				      NULL);
 	}
 	if (!lsap) {
-		IRDA_DEBUG(0,
-		     "%s(), Looks like somebody has removed me already!\n",
-			   __FUNCTION__);
+		pr_debug("%s(), Looks like somebody has removed me already!\n",
+			 __func__);
 		return;
 	}
 	__irlmp_close_lsap(self);
@@ -289,12 +290,9 @@ void irlmp_register_link(struct irlap_cb *irlap, __u32 saddr, notify_t *notify)
 	/*
 	 *  Allocate new instance of a LSAP connection
 	 */
-	lap = kmalloc(sizeof(struct lap_cb), GFP_KERNEL);
-	if (lap == NULL) {
-		IRDA_ERROR("%s: unable to kmalloc\n", __FUNCTION__);
+	lap = kzalloc(sizeof(struct lap_cb), GFP_KERNEL);
+	if (lap == NULL)
 		return;
-	}
-	memset(lap, 0, sizeof(struct lap_cb));
 
 	lap->irlap = irlap;
 	lap->magic = LMP_LAP_MAGIC;
@@ -305,7 +303,8 @@ void irlmp_register_link(struct irlap_cb *irlap, __u32 saddr, notify_t *notify)
 #endif
 	lap->lsaps = hashbin_new(HB_LOCK);
 	if (lap->lsaps == NULL) {
-		IRDA_WARNING("%s(), unable to kmalloc lsaps\n", __FUNCTION__);
+		net_warn_ratelimited("%s(), unable to kmalloc lsaps\n",
+				     __func__);
 		kfree(lap);
 		return;
 	}
@@ -337,8 +336,6 @@ void irlmp_unregister_link(__u32 saddr)
 {
 	struct lap_cb *link;
 
-	IRDA_DEBUG(4, "%s()\n", __FUNCTION__);
-
 	/* We must remove ourselves from the hashbin *first*. This ensure
 	 * that no more LSAPs will be open on this link and no discovery
 	 * will be triggered anymore. Jean II */
@@ -357,6 +354,7 @@ void irlmp_unregister_link(__u32 saddr)
 		/* Final cleanup */
 		del_timer(&link->idle_timer);
 		link->magic = 0;
+		hashbin_delete(link->lsaps, (FREE_FUNC) __irlmp_close_lsap);
 		kfree(link);
 	}
 }
@@ -379,9 +377,8 @@ int irlmp_connect_request(struct lsap_cb *self, __u8 dlsap_sel,
 	IRDA_ASSERT(self != NULL, return -EBADR;);
 	IRDA_ASSERT(self->magic == LMP_LSAP_MAGIC, return -EBADR;);
 
-	IRDA_DEBUG(2,
-	      "%s(), slsap_sel=%02x, dlsap_sel=%02x, saddr=%08x, daddr=%08x\n",
-	      __FUNCTION__, self->slsap_sel, dlsap_sel, saddr, daddr);
+	pr_debug("%s(), slsap_sel=%02x, dlsap_sel=%02x, saddr=%08x, daddr=%08x\n",
+		 __func__, self->slsap_sel, dlsap_sel, saddr, daddr);
 
 	if (test_bit(0, &self->connected)) {
 		ret = -EISCONN;
@@ -396,7 +393,7 @@ int irlmp_connect_request(struct lsap_cb *self, __u8 dlsap_sel,
 
 	/* Any userdata? */
 	if (tx_skb == NULL) {
-		tx_skb = dev_alloc_skb(64);
+		tx_skb = alloc_skb(LMP_MAX_HEADER, GFP_ATOMIC);
 		if (!tx_skb)
 			return -ENOMEM;
 
@@ -425,7 +422,7 @@ int irlmp_connect_request(struct lsap_cb *self, __u8 dlsap_sel,
 		if (daddr != DEV_ADDR_ANY)
 			discovery = hashbin_find(irlmp->cachelog, daddr, NULL);
 		else {
-			IRDA_DEBUG(2, "%s(), no daddr\n", __FUNCTION__);
+			pr_debug("%s(), no daddr\n", __func__);
 			discovery = (discovery_t *)
 				hashbin_get_first(irlmp->cachelog);
 		}
@@ -438,7 +435,7 @@ int irlmp_connect_request(struct lsap_cb *self, __u8 dlsap_sel,
 	}
 	lap = hashbin_lock_find(irlmp->links, saddr, NULL);
 	if (lap == NULL) {
-		IRDA_DEBUG(1, "%s(), Unable to find a usable link!\n", __FUNCTION__);
+		pr_debug("%s(), Unable to find a usable link!\n", __func__);
 		ret = -EHOSTUNREACH;
 		goto err;
 	}
@@ -453,14 +450,15 @@ int irlmp_connect_request(struct lsap_cb *self, __u8 dlsap_sel,
 			 * disconnected yet (waiting for timeout in LAP).
 			 * Maybe we could give LAP a bit of help in this case.
 			 */
-			IRDA_DEBUG(0, "%s(), sorry, but I'm waiting for LAP to timeout!\n", __FUNCTION__);
+			pr_debug("%s(), sorry, but I'm waiting for LAP to timeout!\n",
+				 __func__);
 			ret = -EAGAIN;
 			goto err;
 		}
 
 		/* LAP is already connected to a different node, and LAP
 		 * can only talk to one node at a time */
-		IRDA_DEBUG(0, "%s(), sorry, but link is busy!\n", __FUNCTION__);
+		pr_debug("%s(), sorry, but link is busy!\n", __func__);
 		ret = -EBUSY;
 		goto err;
 	}
@@ -521,8 +519,8 @@ void irlmp_connect_indication(struct lsap_cb *self, struct sk_buff *skb)
 	IRDA_ASSERT(skb != NULL, return;);
 	IRDA_ASSERT(self->lap != NULL, return;);
 
-	IRDA_DEBUG(2, "%s(), slsap_sel=%02x, dlsap_sel=%02x\n",
-		   __FUNCTION__, self->slsap_sel, self->dlsap_sel);
+	pr_debug("%s(), slsap_sel=%02x, dlsap_sel=%02x\n",
+		 __func__, self->slsap_sel, self->dlsap_sel);
 
 	/* Note : self->lap is set in irlmp_link_data_indication(),
 	 * (case CONNECT_CMD:) because we have no way to set it here.
@@ -562,8 +560,8 @@ int irlmp_connect_response(struct lsap_cb *self, struct sk_buff *userdata)
 	/* We set the connected bit and move the lsap to the connected list
 	 * in the state machine itself. Jean II */
 
-	IRDA_DEBUG(2, "%s(), slsap_sel=%02x, dlsap_sel=%02x\n",
-		   __FUNCTION__, self->slsap_sel, self->dlsap_sel);
+	pr_debug("%s(), slsap_sel=%02x, dlsap_sel=%02x\n",
+		 __func__, self->slsap_sel, self->dlsap_sel);
 
 	/* Make room for MUX control header (3 bytes) */
 	IRDA_ASSERT(skb_headroom(userdata) >= LMP_CONTROL_HEADER, return -1;);
@@ -589,8 +587,6 @@ void irlmp_connect_confirm(struct lsap_cb *self, struct sk_buff *skb)
 	int lap_header_size;
 	int max_seg_size;
 
-	IRDA_DEBUG(3, "%s()\n", __FUNCTION__);
-
 	IRDA_ASSERT(skb != NULL, return;);
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == LMP_LSAP_MAGIC, return;);
@@ -602,8 +598,8 @@ void irlmp_connect_confirm(struct lsap_cb *self, struct sk_buff *skb)
 	lap_header_size = IRLAP_GET_HEADER_SIZE(self->lap->irlap);
 	max_header_size = LMP_HEADER + lap_header_size;
 
-	IRDA_DEBUG(2, "%s(), max_header_size=%d\n",
-		   __FUNCTION__, max_header_size);
+	pr_debug("%s(), max_header_size=%d\n",
+		 __func__, max_header_size);
 
 	/* Hide LMP_CONTROL_HEADER header from layer above */
 	skb_pull(skb, LMP_CONTROL_HEADER);
@@ -629,31 +625,27 @@ struct lsap_cb *irlmp_dup(struct lsap_cb *orig, void *instance)
 	struct lsap_cb *new;
 	unsigned long flags;
 
-	IRDA_DEBUG(1, "%s()\n", __FUNCTION__);
-
 	spin_lock_irqsave(&irlmp->unconnected_lsaps->hb_spinlock, flags);
 
 	/* Only allowed to duplicate unconnected LSAP's, and only LSAPs
 	 * that have received a connect indication. Jean II */
 	if ((!hashbin_find(irlmp->unconnected_lsaps, (long) orig, NULL)) ||
 	    (orig->lap == NULL)) {
-		IRDA_DEBUG(0, "%s(), invalid LSAP (wrong state)\n",
-			   __FUNCTION__);
+		pr_debug("%s(), invalid LSAP (wrong state)\n",
+			 __func__);
 		spin_unlock_irqrestore(&irlmp->unconnected_lsaps->hb_spinlock,
 				       flags);
 		return NULL;
 	}
 
 	/* Allocate a new instance */
-	new = kmalloc(sizeof(struct lsap_cb), GFP_ATOMIC);
+	new = kmemdup(orig, sizeof(*new), GFP_ATOMIC);
 	if (!new)  {
-		IRDA_DEBUG(0, "%s(), unable to kmalloc\n", __FUNCTION__);
+		pr_debug("%s(), unable to kmalloc\n", __func__);
 		spin_unlock_irqrestore(&irlmp->unconnected_lsaps->hb_spinlock,
 				       flags);
 		return NULL;
 	}
-	/* Dup */
-	memcpy(new, orig, sizeof(struct lsap_cb));
 	/* new->lap = orig->lap; => done in the memcpy() */
 	/* new->slsap_sel = orig->slsap_sel; => done in the memcpy() */
 	new->conn_skb = NULL;
@@ -675,7 +667,6 @@ struct lsap_cb *irlmp_dup(struct lsap_cb *orig, void *instance)
 
 	return new;
 }
-EXPORT_SYMBOL(irlmp_dup);
 
 /*
  * Function irlmp_disconnect_request (handle, userdata)
@@ -696,7 +687,7 @@ int irlmp_disconnect_request(struct lsap_cb *self, struct sk_buff *userdata)
 	 * and us that might mess up the hashbins below. This fixes it.
 	 * Jean II */
 	if (! test_and_clear_bit(0, &self->connected)) {
-		IRDA_DEBUG(0, "%s(), already disconnected!\n", __FUNCTION__);
+		pr_debug("%s(), already disconnected!\n", __func__);
 		dev_kfree_skb(userdata);
 		return -1;
 	}
@@ -750,19 +741,20 @@ void irlmp_disconnect_indication(struct lsap_cb *self, LM_REASON reason,
 {
 	struct lsap_cb *lsap;
 
-	IRDA_DEBUG(1, "%s(), reason=%s\n", __FUNCTION__, irlmp_reasons[reason]);
+	pr_debug("%s(), reason=%s [%d]\n", __func__,
+		 irlmp_reason_str(reason), reason);
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == LMP_LSAP_MAGIC, return;);
 
-	IRDA_DEBUG(3, "%s(), slsap_sel=%02x, dlsap_sel=%02x\n",
-		   __FUNCTION__, self->slsap_sel, self->dlsap_sel);
+	pr_debug("%s(), slsap_sel=%02x, dlsap_sel=%02x\n",
+		 __func__, self->slsap_sel, self->dlsap_sel);
 
 	/* Already disconnected ?
 	 * There is a race condition between irlmp_disconnect_request()
 	 * and us that might mess up the hashbins below. This fixes it.
 	 * Jean II */
 	if (! test_and_clear_bit(0, &self->connected)) {
-		IRDA_DEBUG(0, "%s(), already disconnected!\n", __FUNCTION__);
+		pr_debug("%s(), already disconnected!\n", __func__);
 		return;
 	}
 
@@ -795,7 +787,7 @@ void irlmp_disconnect_indication(struct lsap_cb *self, LM_REASON reason,
 		self->notify.disconnect_indication(self->notify.instance,
 						   self, reason, skb);
 	} else {
-		IRDA_DEBUG(0, "%s(), no handler\n", __FUNCTION__);
+		pr_debug("%s(), no handler\n", __func__);
 	}
 }
 
@@ -843,16 +835,18 @@ void irlmp_do_expiry(void)
 void irlmp_do_discovery(int nslots)
 {
 	struct lap_cb *lap;
+	__u16 *data_hintsp;
 
 	/* Make sure the value is sane */
 	if ((nslots != 1) && (nslots != 6) && (nslots != 8) && (nslots != 16)){
-		IRDA_WARNING("%s: invalid value for number of slots!\n",
-			     __FUNCTION__);
+		net_warn_ratelimited("%s: invalid value for number of slots!\n",
+				     __func__);
 		nslots = sysctl_discovery_slots = 8;
 	}
 
 	/* Construct new discovery info to be used by IrLAP, */
-	u16ho(irlmp->discovery_cmd.data.hints) = irlmp->hints.word;
+	data_hintsp = (__u16 *) irlmp->discovery_cmd.data.hints;
+	put_unaligned(irlmp->hints.word, data_hintsp);
 
 	/*
 	 *  Set character set for device name (we use ASCII), and
@@ -897,7 +891,7 @@ void irlmp_discovery_request(int nslots)
 
 	/*
 	 * Start a single discovery operation if discovery is not already
-         * running
+	 * running
 	 */
 	if (!sysctl_discovery) {
 		/* Check if user wants to override the default */
@@ -940,7 +934,7 @@ struct irda_device_info *irlmp_get_discoveries(int *pn, __u16 mask, int nslots)
 	}
 
 	/* Return current cached discovery log */
-	return(irlmp_copy_discoveries(irlmp->cachelog, pn, mask, TRUE));
+	return irlmp_copy_discoveries(irlmp->cachelog, pn, mask, TRUE);
 }
 EXPORT_SYMBOL(irlmp_get_discoveries);
 
@@ -963,8 +957,6 @@ irlmp_notify_client(irlmp_client_t *client,
 	discinfo_t *discoveries;	/* Copy of the discovery log */
 	int	number;			/* Number of nodes in the log */
 	int	i;
-
-	IRDA_DEBUG(3, "%s()\n", __FUNCTION__);
 
 	/* Check if client wants or not partial/selective log (optimisation) */
 	if (!client->disco_callback)
@@ -1015,8 +1007,6 @@ void irlmp_discovery_confirm(hashbin_t *log, DISCOVERY_MODE mode)
 	irlmp_client_t *client;
 	irlmp_client_t *client_next;
 
-	IRDA_DEBUG(3, "%s()\n", __FUNCTION__);
-
 	IRDA_ASSERT(log != NULL, return;);
 
 	if (!(HASHBIN_GET_SIZE(log)))
@@ -1050,8 +1040,6 @@ void irlmp_discovery_expiry(discinfo_t *expiries, int number)
 	irlmp_client_t *client_next;
 	int		i;
 
-	IRDA_DEBUG(3, "%s()\n", __FUNCTION__);
-
 	IRDA_ASSERT(expiries != NULL, return;);
 
 	/* For each client - notify callback may touch client list */
@@ -1063,7 +1051,8 @@ void irlmp_discovery_expiry(discinfo_t *expiries, int number)
 		for(i = 0; i < number; i++) {
 			/* Check if we should notify client */
 			if ((client->expir_callback) &&
-			    (client->hint_mask.word & u16ho(expiries[i].hints)
+			    (client->hint_mask.word &
+			     get_unaligned((__u16 *)expiries[i].hints)
 			     & 0x7f7f) )
 				client->expir_callback(&(expiries[i]),
 						       EXPIRY_TIMEOUT,
@@ -1083,11 +1072,9 @@ void irlmp_discovery_expiry(discinfo_t *expiries, int number)
  */
 discovery_t *irlmp_get_discovery_response(void)
 {
-	IRDA_DEBUG(4, "%s()\n", __FUNCTION__);
-
 	IRDA_ASSERT(irlmp != NULL, return NULL;);
 
-	u16ho(irlmp->discovery_rsp.data.hints) = irlmp->hints.word;
+	put_unaligned(irlmp->hints.word, (__u16 *)irlmp->discovery_rsp.data.hints);
 
 	/*
 	 *  Set character set for device name (we use ASCII), and
@@ -1161,8 +1148,6 @@ int irlmp_udata_request(struct lsap_cb *self, struct sk_buff *userdata)
 {
 	int	ret;
 
-	IRDA_DEBUG(4, "%s()\n", __FUNCTION__);
-
 	IRDA_ASSERT(userdata != NULL, return -1;);
 
 	/* Make room for MUX header */
@@ -1185,8 +1170,6 @@ int irlmp_udata_request(struct lsap_cb *self, struct sk_buff *userdata)
  */
 void irlmp_udata_indication(struct lsap_cb *self, struct sk_buff *skb)
 {
-	IRDA_DEBUG(4, "%s()\n", __FUNCTION__);
-
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == LMP_LSAP_MAGIC, return;);
 	IRDA_ASSERT(skb != NULL, return;);
@@ -1211,8 +1194,6 @@ int irlmp_connless_data_request(struct lsap_cb *self, struct sk_buff *userdata,
 {
 	struct sk_buff *clone_skb;
 	struct lap_cb *lap;
-
-	IRDA_DEBUG(4, "%s()\n", __FUNCTION__);
 
 	IRDA_ASSERT(userdata != NULL, return -1;);
 
@@ -1263,8 +1244,6 @@ int irlmp_connless_data_request(struct lsap_cb *self, struct sk_buff *userdata,
 #ifdef CONFIG_IRDA_ULTRA
 void irlmp_connless_data_indication(struct lsap_cb *self, struct sk_buff *skb)
 {
-	IRDA_DEBUG(4, "%s()\n", __FUNCTION__);
-
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == LMP_LSAP_MAGIC, return;);
 	IRDA_ASSERT(skb != NULL, return;);
@@ -1306,7 +1285,7 @@ void irlmp_status_indication(struct lap_cb *self,
 			curr->notify.status_indication(curr->notify.instance,
 						       link, lock);
 		else
-			IRDA_DEBUG(2, "%s(), no handler\n", __FUNCTION__);
+			pr_debug("%s(), no handler\n", __func__);
 
 		curr = next;
 	}
@@ -1334,7 +1313,7 @@ void irlmp_flow_indication(struct lap_cb *self, LOCAL_FLOW flow)
 	/* Get the number of lsap. That's the only safe way to know
 	 * that we have looped around... - Jean II */
 	lsap_todo = HASHBIN_GET_SIZE(self->lsaps);
-	IRDA_DEBUG(4, "%s() : %d lsaps to scan\n", __FUNCTION__, lsap_todo);
+	pr_debug("%s() : %d lsaps to scan\n", __func__, lsap_todo);
 
 	/* Poll lsap in order until the queue is full or until we
 	 * tried them all.
@@ -1353,14 +1332,16 @@ void irlmp_flow_indication(struct lap_cb *self, LOCAL_FLOW flow)
 		/* Uh-oh... Paranoia */
 		if(curr == NULL)
 			break;
-		IRDA_DEBUG(4, "%s() : curr is %p, next was %p and is now %p, still %d to go - queue len = %d\n", __FUNCTION__, curr, next, self->flow_next, lsap_todo, IRLAP_GET_TX_QUEUE_LEN(self->irlap));
+		pr_debug("%s() : curr is %p, next was %p and is now %p, still %d to go - queue len = %d\n",
+			 __func__, curr, next, self->flow_next, lsap_todo,
+			 IRLAP_GET_TX_QUEUE_LEN(self->irlap));
 
 		/* Inform lsap user that it can send one more packet. */
 		if (curr->notify.flow_indication != NULL)
 			curr->notify.flow_indication(curr->notify.instance,
 						     curr, flow);
 		else
-			IRDA_DEBUG(1, "%s(), no handler\n", __FUNCTION__);
+			pr_debug("%s(), no handler\n", __func__);
 	}
 }
 
@@ -1381,32 +1362,30 @@ __u8 *irlmp_hint_to_service(__u8 *hint)
 	 * since we currently only support 2 hint bytes
 	 */
 	service = kmalloc(16, GFP_ATOMIC);
-	if (!service) {
-		IRDA_DEBUG(1, "%s(), Unable to kmalloc!\n", __FUNCTION__);
+	if (!service)
 		return NULL;
-	}
 
 	if (!hint[0]) {
-		IRDA_DEBUG(1, "<None>\n");
+		pr_debug("<None>\n");
 		kfree(service);
 		return NULL;
 	}
 	if (hint[0] & HINT_PNP)
-		IRDA_DEBUG(1, "PnP Compatible ");
+		pr_debug("PnP Compatible ");
 	if (hint[0] & HINT_PDA)
-		IRDA_DEBUG(1, "PDA/Palmtop ");
+		pr_debug("PDA/Palmtop ");
 	if (hint[0] & HINT_COMPUTER)
-		IRDA_DEBUG(1, "Computer ");
+		pr_debug("Computer ");
 	if (hint[0] & HINT_PRINTER) {
-		IRDA_DEBUG(1, "Printer ");
+		pr_debug("Printer ");
 		service[i++] = S_PRINTER;
 	}
 	if (hint[0] & HINT_MODEM)
-		IRDA_DEBUG(1, "Modem ");
+		pr_debug("Modem ");
 	if (hint[0] & HINT_FAX)
-		IRDA_DEBUG(1, "Fax ");
+		pr_debug("Fax ");
 	if (hint[0] & HINT_LAN) {
-		IRDA_DEBUG(1, "LAN Access ");
+		pr_debug("LAN Access ");
 		service[i++] = S_LAN;
 	}
 	/*
@@ -1416,21 +1395,22 @@ __u8 *irlmp_hint_to_service(__u8 *hint)
 	 */
 	if (hint[0] & HINT_EXTENSION) {
 		if (hint[1] & HINT_TELEPHONY) {
-			IRDA_DEBUG(1, "Telephony ");
+			pr_debug("Telephony ");
 			service[i++] = S_TELEPHONY;
-		} if (hint[1] & HINT_FILE_SERVER)
-			IRDA_DEBUG(1, "File Server ");
+		}
+		if (hint[1] & HINT_FILE_SERVER)
+			pr_debug("File Server ");
 
 		if (hint[1] & HINT_COMM) {
-			IRDA_DEBUG(1, "IrCOMM ");
+			pr_debug("IrCOMM ");
 			service[i++] = S_COMM;
 		}
 		if (hint[1] & HINT_OBEX) {
-			IRDA_DEBUG(1, "IrOBEX ");
+			pr_debug("IrOBEX ");
 			service[i++] = S_OBEX;
 		}
 	}
-	IRDA_DEBUG(1, "\n");
+	pr_debug("\n");
 
 	/* So that client can be notified about any discovery */
 	service[i++] = S_ANY;
@@ -1483,14 +1463,13 @@ void *irlmp_register_service(__u16 hints)
 {
 	irlmp_service_t *service;
 
-	IRDA_DEBUG(4, "%s(), hints = %04x\n", __FUNCTION__, hints);
+	pr_debug("%s(), hints = %04x\n", __func__, hints);
 
 	/* Make a new registration */
 	service = kmalloc(sizeof(irlmp_service_t), GFP_ATOMIC);
-	if (!service) {
-		IRDA_DEBUG(1, "%s(), Unable to kmalloc!\n", __FUNCTION__);
+	if (!service)
 		return NULL;
-	}
+
 	service->hints.word = hints;
 	hashbin_insert(irlmp->services, (irda_queue_t *) service,
 		       (long) service, NULL);
@@ -1513,15 +1492,13 @@ int irlmp_unregister_service(void *handle)
 	irlmp_service_t *service;
 	unsigned long flags;
 
-	IRDA_DEBUG(4, "%s()\n", __FUNCTION__);
-
 	if (!handle)
 		return -1;
 
 	/* Caller may call with invalid handle (it's legal) - Jean II */
 	service = hashbin_lock_find(irlmp->services, (long) handle, NULL);
 	if (!service) {
-		IRDA_DEBUG(1, "%s(), Unknown service!\n", __FUNCTION__);
+		pr_debug("%s(), Unknown service!\n", __func__);
 		return -1;
 	}
 
@@ -1533,12 +1510,12 @@ int irlmp_unregister_service(void *handle)
 
 	/* Refresh current hint bits */
 	spin_lock_irqsave(&irlmp->services->hb_spinlock, flags);
-        service = (irlmp_service_t *) hashbin_get_first(irlmp->services);
-        while (service) {
+	service = (irlmp_service_t *) hashbin_get_first(irlmp->services);
+	while (service) {
 		irlmp->hints.word |= service->hints.word;
 
-                service = (irlmp_service_t *)hashbin_get_next(irlmp->services);
-        }
+		service = (irlmp_service_t *)hashbin_get_next(irlmp->services);
+	}
 	spin_unlock_irqrestore(&irlmp->services->hb_spinlock, flags);
 	return 0;
 }
@@ -1558,15 +1535,12 @@ void *irlmp_register_client(__u16 hint_mask, DISCOVERY_CALLBACK1 disco_clb,
 {
 	irlmp_client_t *client;
 
-	IRDA_DEBUG(1, "%s()\n", __FUNCTION__);
 	IRDA_ASSERT(irlmp != NULL, return NULL;);
 
 	/* Make a new registration */
 	client = kmalloc(sizeof(irlmp_client_t), GFP_ATOMIC);
-	if (!client) {
-		IRDA_DEBUG( 1, "%s(), Unable to kmalloc!\n", __FUNCTION__);
+	if (!client)
 		return NULL;
-	}
 
 	/* Register the details */
 	client->hint_mask.word = hint_mask;
@@ -1600,7 +1574,7 @@ int irlmp_update_client(void *handle, __u16 hint_mask,
 
 	client = hashbin_lock_find(irlmp->clients, (long) handle, NULL);
 	if (!client) {
-		IRDA_DEBUG(1, "%s(), Unknown client!\n", __FUNCTION__);
+		pr_debug("%s(), Unknown client!\n", __func__);
 		return -1;
 	}
 
@@ -1623,19 +1597,17 @@ int irlmp_unregister_client(void *handle)
 {
 	struct irlmp_client *client;
 
-	IRDA_DEBUG(4, "%s()\n", __FUNCTION__);
-
 	if (!handle)
 		return -1;
 
 	/* Caller may call with invalid handle (it's legal) - Jean II */
 	client = hashbin_lock_find(irlmp->clients, (long) handle, NULL);
 	if (!client) {
-		IRDA_DEBUG(1, "%s(), Unknown client!\n", __FUNCTION__);
+		pr_debug("%s(), Unknown client!\n", __func__);
 		return -1;
 	}
 
-	IRDA_DEBUG(4, "%s(), removing client!\n", __FUNCTION__);
+	pr_debug("%s(), removing client!\n", __func__);
 	hashbin_remove_this(irlmp->clients, (irda_queue_t *) client);
 	kfree(client);
 
@@ -1664,8 +1636,6 @@ static int irlmp_slsap_inuse(__u8 slsap_sel)
 	IRDA_ASSERT(irlmp->magic == LMP_MAGIC, return TRUE;);
 	IRDA_ASSERT(slsap_sel != LSAP_ANY, return TRUE;);
 
-	IRDA_DEBUG(4, "%s()\n", __FUNCTION__);
-
 #ifdef CONFIG_IRDA_ULTRA
 	/* Accept all bindings to the connectionless LSAP */
 	if (slsap_sel == LSAP_CONNLESS)
@@ -1681,7 +1651,8 @@ static int irlmp_slsap_inuse(__u8 slsap_sel)
 	 *  every IrLAP connection and check every LSAP associated with each
 	 *  the connection.
 	 */
-	spin_lock_irqsave(&irlmp->links->hb_spinlock, flags);
+	spin_lock_irqsave_nested(&irlmp->links->hb_spinlock, flags,
+			SINGLE_DEPTH_NESTING);
 	lap = (struct lap_cb *) hashbin_get_first(irlmp->links);
 	while (lap != NULL) {
 		IRDA_ASSERT(lap->magic == LMP_LAP_MAGIC, goto errlap;);
@@ -1698,8 +1669,8 @@ static int irlmp_slsap_inuse(__u8 slsap_sel)
 				    goto errlsap;);
 
 			if ((self->slsap_sel == slsap_sel)) {
-				IRDA_DEBUG(4, "Source LSAP selector=%02x in use\n",
-					   self->slsap_sel);
+				pr_debug("Source LSAP selector=%02x in use\n",
+					 self->slsap_sel);
 				goto errlsap;
 			}
 			self = (struct lsap_cb*) hashbin_get_next(lap->lsaps);
@@ -1723,8 +1694,8 @@ static int irlmp_slsap_inuse(__u8 slsap_sel)
 	while (self != NULL) {
 		IRDA_ASSERT(self->magic == LMP_LSAP_MAGIC, goto erruncon;);
 		if ((self->slsap_sel == slsap_sel)) {
-			IRDA_DEBUG(4, "Source LSAP selector=%02x in use (unconnected)\n",
-				   self->slsap_sel);
+			pr_debug("Source LSAP selector=%02x in use (unconnected)\n",
+				 self->slsap_sel);
 			goto erruncon;
 		}
 		self = (struct lsap_cb*) hashbin_get_next(irlmp->unconnected_lsaps);
@@ -1789,8 +1760,8 @@ static __u8 irlmp_find_free_slsap(void)
 
 			/* Make sure we terminate the loop */
 			if (wrapped++) {
-				IRDA_ERROR("%s: no more free LSAPs !\n",
-					   __FUNCTION__);
+				net_err_ratelimited("%s: no more free LSAPs !\n",
+						    __func__);
 				return 0;
 			}
 		}
@@ -1804,8 +1775,8 @@ static __u8 irlmp_find_free_slsap(void)
 
 	/* Got it ! */
 	lsap_sel = irlmp->last_lsap_sel;
-	IRDA_DEBUG(4, "%s(), found free lsap_sel=%02x\n",
-		   __FUNCTION__, lsap_sel);
+	pr_debug("%s(), found free lsap_sel=%02x\n",
+		 __func__, lsap_sel);
 
 	return lsap_sel;
 }
@@ -1823,26 +1794,27 @@ LM_REASON irlmp_convert_lap_reason( LAP_REASON lap_reason)
 
 	switch (lap_reason) {
 	case LAP_DISC_INDICATION: /* Received a disconnect request from peer */
-		IRDA_DEBUG( 1, "%s(), LAP_DISC_INDICATION\n", __FUNCTION__);
+		pr_debug("%s(), LAP_DISC_INDICATION\n", __func__);
 		reason = LM_USER_REQUEST;
 		break;
 	case LAP_NO_RESPONSE:    /* To many retransmits without response */
-		IRDA_DEBUG( 1, "%s(), LAP_NO_RESPONSE\n", __FUNCTION__);
+		pr_debug("%s(), LAP_NO_RESPONSE\n", __func__);
 		reason = LM_LAP_DISCONNECT;
 		break;
 	case LAP_RESET_INDICATION:
-		IRDA_DEBUG( 1, "%s(), LAP_RESET_INDICATION\n", __FUNCTION__);
+		pr_debug("%s(), LAP_RESET_INDICATION\n", __func__);
 		reason = LM_LAP_RESET;
 		break;
 	case LAP_FOUND_NONE:
 	case LAP_MEDIA_BUSY:
 	case LAP_PRIMARY_CONFLICT:
-		IRDA_DEBUG(1, "%s(), LAP_FOUND_NONE, LAP_MEDIA_BUSY or LAP_PRIMARY_CONFLICT\n", __FUNCTION__);
+		pr_debug("%s(), LAP_FOUND_NONE, LAP_MEDIA_BUSY or LAP_PRIMARY_CONFLICT\n",
+			 __func__);
 		reason = LM_CONNECT_FAILURE;
 		break;
 	default:
-		IRDA_DEBUG(1, "%s(), Unknow IrLAP disconnect reason %d!\n",
-			   __FUNCTION__, lap_reason);
+		pr_debug("%s(), Unknown IrLAP disconnect reason %d!\n",
+			 __func__, lap_reason);
 		reason = LM_LAP_DISCONNECT;
 		break;
 	}
@@ -1865,9 +1837,9 @@ static void *irlmp_seq_hb_idx(struct irlmp_iter_state *iter, loff_t *off)
 
 	spin_lock_irq(&iter->hashbin->hb_spinlock);
 	for (element = hashbin_get_first(iter->hashbin);
-	     element != NULL; 
+	     element != NULL;
 	     element = hashbin_get_next(iter->hashbin)) {
-		if (!off || *off-- == 0) {
+		if (!off || (*off)-- == 0) {
 			/* NB: hashbin left locked */
 			return element;
 		}
@@ -1922,7 +1894,7 @@ static void *irlmp_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 	if (v == NULL) {			/* no more in this hash bin */
 		spin_unlock_irq(&iter->hashbin->hb_spinlock);
 
-		if (iter->hashbin == irlmp->unconnected_lsaps) 
+		if (iter->hashbin == irlmp->unconnected_lsaps)
 			v =  LINK_START_TOKEN;
 
 		iter->hashbin = NULL;
@@ -1998,7 +1970,7 @@ static int irlmp_seq_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
-static struct seq_operations irlmp_seq_ops = {
+static const struct seq_operations irlmp_seq_ops = {
 	.start  = irlmp_seq_start,
 	.next   = irlmp_seq_next,
 	.stop   = irlmp_seq_stop,
@@ -2007,30 +1979,13 @@ static struct seq_operations irlmp_seq_ops = {
 
 static int irlmp_seq_open(struct inode *inode, struct file *file)
 {
-	struct seq_file *seq;
-	int rc = -ENOMEM;
-	struct irlmp_iter_state *s;
-
 	IRDA_ASSERT(irlmp != NULL, return -EINVAL;);
 
-	s = kmalloc(sizeof(*s), GFP_KERNEL);
-	if (!s)
-		goto out;
-
-	rc = seq_open(file, &irlmp_seq_ops);
-	if (rc)
-		goto out_kfree;
-
-	seq	     = file->private_data;
-	seq->private = s;
-out:
-	return rc;
-out_kfree:
-	kfree(s);
-	goto out;
+	return seq_open_private(file, &irlmp_seq_ops,
+			sizeof(struct irlmp_iter_state));
 }
 
-struct file_operations irlmp_seq_fops = {
+const struct file_operations irlmp_seq_fops = {
 	.owner		= THIS_MODULE,
 	.open           = irlmp_seq_open,
 	.read           = seq_read,

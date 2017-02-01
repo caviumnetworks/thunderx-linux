@@ -18,7 +18,7 @@
  *     published by the Free Software Foundation; either version 2 of 
  *     the License, or (at your option) any later version.
  *
- *     Neither Dag Brattli nor University of Tromsø admit liability nor
+ *     Neither Dag Brattli nor University of TromsÃ¸ admit liability nor
  *     provide warranty for any of this software. This material is 
  *     provided "AS-IS" and at no charge.
  *
@@ -79,8 +79,8 @@ typedef enum {
 	LM_LAP_IDLE_TIMEOUT,
 } IRLMP_EVENT;
 
-extern const char *irlmp_state[];
-extern const char *irlsap_state[];
+extern const char *const irlmp_state[];
+extern const char *const irlsap_state[];
 
 void irlmp_watchdog_timer_expired(void *data);
 void irlmp_discovery_timer_expired(void *data);

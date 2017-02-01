@@ -10,11 +10,11 @@
  * and the decompression code from MILO.
  */
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/version.h>
+#include <generated/utsrelease.h>
 #include <linux/mm.h>
 
-#include <asm/system.h>
 #include <asm/console.h>
 #include <asm/hwrpb.h>
 #include <asm/pgtable.h>
@@ -466,4 +466,10 @@ start_kernel(void)
 	srm_printk("Doing 'runkernel()'...\n");
 #endif
 	runkernel();
+}
+
+ /* dummy function, should never be called. */
+void *__kmalloc(size_t size, gfp_t flags)
+{
+	return (void *)NULL;
 }

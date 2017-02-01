@@ -1,7 +1,7 @@
 /*
  *  Driver for TANBAC TB0219 base board.
  *
- *  Copyright (C) 2005  Yoichi Yuasa <yuasa@hh.iij4u.or.jp>
+ *  Copyright (C) 2005  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -17,15 +17,18 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
-#include <linux/device.h>
+#include <linux/platform_device.h>
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/uaccess.h>
 
 #include <asm/io.h>
 #include <asm/reboot.h>
+#include <asm/vr41xx/giu.h>
+#include <asm/vr41xx/tb0219.h>
 
-MODULE_AUTHOR("Yoichi Yuasa <yuasa@hh.iij4u.or.jp>");
+MODULE_AUTHOR("Yoichi Yuasa <yuasa@linux-mips.org>");
 MODULE_DESCRIPTION("TANBAC TB0219 base board driver");
 MODULE_LICENSE("GPL");
 
@@ -35,7 +38,7 @@ MODULE_PARM_DESC(major, "Major device number");
 
 static void (*old_machine_restart)(char *command);
 static void __iomem *tb0219_base;
-static spinlock_t tb0219_lock;
+static DEFINE_SPINLOCK(tb0219_lock);
 
 #define tb0219_read(offset)		readw(tb0219_base + (offset))
 #define tb0219_write(offset, value)	writew((value), tb0219_base + (offset))
@@ -162,7 +165,7 @@ static ssize_t tanbac_tb0219_read(struct file *file, char __user *buf, size_t le
 	unsigned int minor;
 	char value;
 
-	minor = iminor(file->f_dentry->d_inode);
+	minor = iminor(file_inode(file));
 	switch (minor) {
 	case 0:
 		value = get_led();
@@ -198,7 +201,7 @@ static ssize_t tanbac_tb0219_write(struct file *file, const char __user *data,
 	int retval = 0;
 	char c;
 
-	minor = iminor(file->f_dentry->d_inode);
+	minor = iminor(file_inode(file));
 	switch (minor) {
 	case 0:
 		type = TYPE_LED;
@@ -253,12 +256,13 @@ static int tanbac_tb0219_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static struct file_operations tb0219_fops = {
+static const struct file_operations tb0219_fops = {
 	.owner		= THIS_MODULE,
 	.read		= tanbac_tb0219_read,
 	.write		= tanbac_tb0219_write,
 	.open		= tanbac_tb0219_open,
 	.release	= tanbac_tb0219_release,
+	.llseek		= no_llseek,
 };
 
 static void tb0219_restart(char *command)
@@ -266,7 +270,22 @@ static void tb0219_restart(char *command)
 	tb0219_write(TB0219_RESET, 0);
 }
 
-static int tb0219_probe(struct device *dev)
+static void tb0219_pci_irq_init(void)
+{
+	/* PCI Slot 1 */
+	vr41xx_set_irq_trigger(TB0219_PCI_SLOT1_PIN, IRQ_TRIGGER_LEVEL, IRQ_SIGNAL_THROUGH);
+	vr41xx_set_irq_level(TB0219_PCI_SLOT1_PIN, IRQ_LEVEL_LOW);
+
+	/* PCI Slot 2 */
+	vr41xx_set_irq_trigger(TB0219_PCI_SLOT2_PIN, IRQ_TRIGGER_LEVEL, IRQ_SIGNAL_THROUGH);
+	vr41xx_set_irq_level(TB0219_PCI_SLOT2_PIN, IRQ_LEVEL_LOW);
+
+	/* PCI Slot 3 */
+	vr41xx_set_irq_trigger(TB0219_PCI_SLOT3_PIN, IRQ_TRIGGER_LEVEL, IRQ_SIGNAL_THROUGH);
+	vr41xx_set_irq_level(TB0219_PCI_SLOT3_PIN, IRQ_LEVEL_LOW);
+}
+
+static int tb0219_probe(struct platform_device *dev)
 {
 	int retval;
 
@@ -287,10 +306,10 @@ static int tb0219_probe(struct device *dev)
 		return retval;
 	}
 
-	spin_lock_init(&tb0219_lock);
-
 	old_machine_restart = _machine_restart;
 	_machine_restart = tb0219_restart;
+
+	tb0219_pci_irq_init();
 
 	if (major == 0) {
 		major = retval;
@@ -300,7 +319,7 @@ static int tb0219_probe(struct device *dev)
 	return 0;
 }
 
-static int tb0219_remove(struct device *dev)
+static int tb0219_remove(struct platform_device *dev)
 {
 	_machine_restart = old_machine_restart;
 
@@ -314,32 +333,38 @@ static int tb0219_remove(struct device *dev)
 
 static struct platform_device *tb0219_platform_device;
 
-static struct device_driver tb0219_device_driver = {
-	.name		= "TB0219",
-	.bus		= &platform_bus_type,
+static struct platform_driver tb0219_device_driver = {
 	.probe		= tb0219_probe,
 	.remove		= tb0219_remove,
+	.driver		= {
+		.name	= "TB0219",
+	},
 };
 
-static int __devinit tanbac_tb0219_init(void)
+static int __init tanbac_tb0219_init(void)
 {
 	int retval;
 
-	tb0219_platform_device = platform_device_register_simple("TB0219", -1, NULL, 0);
-	if (IS_ERR(tb0219_platform_device))
-		return PTR_ERR(tb0219_platform_device);
+	tb0219_platform_device = platform_device_alloc("TB0219", -1);
+	if (!tb0219_platform_device)
+		return -ENOMEM;
 
-	retval = driver_register(&tb0219_device_driver);
+	retval = platform_device_add(tb0219_platform_device);
+	if (retval < 0) {
+		platform_device_put(tb0219_platform_device);
+		return retval;
+	}
+
+	retval = platform_driver_register(&tb0219_device_driver);
 	if (retval < 0)
 		platform_device_unregister(tb0219_platform_device);
 
 	return retval;
 }
 
-static void __devexit tanbac_tb0219_exit(void)
+static void __exit tanbac_tb0219_exit(void)
 {
-	driver_unregister(&tb0219_device_driver);
-
+	platform_driver_unregister(&tb0219_device_driver);
 	platform_device_unregister(tb0219_platform_device);
 }
 

@@ -39,10 +39,13 @@
  *		Martin J. Bligh	: 	Added support for multi-quad systems
  */
 
-#include <linux/config.h>
+#include <linux/module.h>
+#include <linux/cpu.h>
 #include <linux/init.h>
+#include <linux/kernel.h>
 #include <linux/mm.h>
-#include <linux/smp_lock.h>
+#include <linux/sched.h>
+#include <linux/err.h>
 #include <linux/irq.h>
 #include <linux/bootmem.h>
 #include <linux/delay.h>
@@ -70,13 +73,11 @@ static unsigned int bsp_phys_id = -1;
 /* Bitmask of physically existing CPUs */
 physid_mask_t phys_cpu_present_map;
 
-/* Bitmask of currently online CPUs */
-cpumask_t cpu_online_map;
-
 cpumask_t cpu_bootout_map;
 cpumask_t cpu_bootin_map;
-cpumask_t cpu_callout_map;
 static cpumask_t cpu_callin_map;
+cpumask_t cpu_callout_map;
+EXPORT_SYMBOL(cpu_callout_map);
 
 /* Per CPU bogomips and other parameters */
 struct cpuinfo_m32r cpu_data[NR_CPUS] __cacheline_aligned;
@@ -91,6 +92,7 @@ extern struct {
 
 /* which physical physical ID maps to which logical CPU number */
 static volatile int physid_2_cpu[NR_CPUS];
+#define physid_to_cpu(physid)	physid_2_cpu[physid]
 
 /* which logical CPU number maps to which physical ID */
 volatile int cpu_2_physid[NR_CPUS];
@@ -107,13 +109,8 @@ static unsigned int calibration_result;
 /* Function Prototypes                                                       */
 /*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*/
 
-void smp_prepare_boot_cpu(void);
-void smp_prepare_cpus(unsigned int);
-static void smp_tune_scheduling(void);
 static void init_ipi_lock(void);
 static void do_boot_cpu(int);
-int __cpu_up(unsigned int);
-void smp_cpus_done(unsigned int);
 
 int start_secondary(void *);
 static void smp_callin(void);
@@ -128,15 +125,15 @@ static void map_cpu_to_physid(int, int);
 static void unmap_cpu_to_physid(int, int);
 
 /*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*/
-/* Boot up APs Routins : BSP                                                 */
+/* Boot up APs Routines : BSP                                                */
 /*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*/
-void __devinit smp_prepare_boot_cpu(void)
+void smp_prepare_boot_cpu(void)
 {
 	bsp_phys_id = hard_smp_processor_id();
 	physid_set(bsp_phys_id, phys_cpu_present_map);
-	cpu_set(0, cpu_online_map);	/* BSP's cpu_id == 0 */
-	cpu_set(0, cpu_callout_map);
-	cpu_set(0, cpu_callin_map);
+	set_cpu_online(0, true);	/* BSP's cpu_id == 0 */
+	cpumask_set_cpu(0, &cpu_callout_map);
+	cpumask_set_cpu(0, &cpu_callin_map);
 
 	/*
 	 * Initialize the logical to physical CPU number mapping
@@ -176,6 +173,9 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 	}
 	for (phys_id = 0 ; phys_id < nr_cpu ; phys_id++)
 		physid_set(phys_id, phys_cpu_present_map);
+#ifndef CONFIG_HOTPLUG_CPU
+	init_cpu_present(cpu_possible_mask);
+#endif
 
 	show_mp_info(nr_cpu);
 
@@ -185,7 +185,6 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 	 * Setup boot CPU information
 	 */
 	smp_store_cpu_info(0); /* Final full version of the data */
-	smp_tune_scheduling();
 
 	/*
 	 * If SMP should be disabled, then really disable it!
@@ -210,7 +209,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 		if (!physid_isset(phys_id, phys_cpu_present_map))
 			continue;
 
-		if ((max_cpus >= 0) && (max_cpus <= cpucount + 1))
+		if (max_cpus <= cpucount + 1)
 			continue;
 
 		do_boot_cpu(phys_id);
@@ -227,11 +226,6 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 
 smp_done:
 	Dprintk("Boot done.\n");
-}
-
-static void __init smp_tune_scheduling(void)
-{
-	/* Nothing to do. */
 }
 
 /*
@@ -285,7 +279,7 @@ static void __init do_boot_cpu(int phys_id)
 	/* So we see what's up   */
 	printk("Booting processor %d/%d\n", phys_id, cpu_id);
 	stack_start.spi = (void *)idle->thread.sp;
-	idle->thread_info->cpu = cpu_id;
+	task_thread_info(idle)->cpu = cpu_id;
 
 	/*
 	 * Send Startup IPI
@@ -296,10 +290,10 @@ static void __init do_boot_cpu(int phys_id)
 	send_status = 0;
 	boot_status = 0;
 
-	cpu_set(phys_id, cpu_bootout_map);
+	cpumask_set_cpu(phys_id, &cpu_bootout_map);
 
 	/* Send Startup IPI */
-	send_IPI_mask_phys(cpumask_of_cpu(phys_id), CPU_BOOT_IPI, 0);
+	send_IPI_mask_phys(cpumask_of(phys_id), CPU_BOOT_IPI, 0);
 
 	Dprintk("Waiting for send to finish...\n");
 	timeout = 0;
@@ -308,7 +302,7 @@ static void __init do_boot_cpu(int phys_id)
 	do {
 		Dprintk("+");
 		udelay(1000);
-		send_status = !cpu_isset(phys_id, cpu_bootin_map);
+		send_status = !cpumask_test_cpu(phys_id, &cpu_bootin_map);
 	} while (send_status && (timeout++ < 100));
 
 	Dprintk("After Startup.\n");
@@ -318,19 +312,19 @@ static void __init do_boot_cpu(int phys_id)
 		 * allow APs to start initializing.
 		 */
 		Dprintk("Before Callout %d.\n", cpu_id);
-		cpu_set(cpu_id, cpu_callout_map);
+		cpumask_set_cpu(cpu_id, &cpu_callout_map);
 		Dprintk("After Callout %d.\n", cpu_id);
 
 		/*
 		 * Wait 5s total for a response
 		 */
 		for (timeout = 0; timeout < 5000; timeout++) {
-			if (cpu_isset(cpu_id, cpu_callin_map))
+			if (cpumask_test_cpu(cpu_id, &cpu_callin_map))
 				break;	/* It has booted */
 			udelay(1000);
 		}
 
-		if (cpu_isset(cpu_id, cpu_callin_map)) {
+		if (cpumask_test_cpu(cpu_id, &cpu_callin_map)) {
 			/* number CPUs logically, starting from 1 (BSP is 0) */
 			Dprintk("OK.\n");
 		} else {
@@ -342,28 +336,28 @@ static void __init do_boot_cpu(int phys_id)
 
 	if (send_status || boot_status) {
 		unmap_cpu_to_physid(cpu_id, phys_id);
-		cpu_clear(cpu_id, cpu_callout_map);
-		cpu_clear(cpu_id, cpu_callin_map);
-		cpu_clear(cpu_id, cpu_initialized);
+		cpumask_clear_cpu(cpu_id, &cpu_callout_map);
+		cpumask_clear_cpu(cpu_id, &cpu_callin_map);
+		cpumask_clear_cpu(cpu_id, &cpu_initialized);
 		cpucount--;
 	}
 }
 
-int __devinit __cpu_up(unsigned int cpu_id)
+int __cpu_up(unsigned int cpu_id, struct task_struct *tidle)
 {
 	int timeout;
 
-	cpu_set(cpu_id, smp_commenced_mask);
+	cpumask_set_cpu(cpu_id, &smp_commenced_mask);
 
 	/*
 	 * Wait 5s total for a response
 	 */
 	for (timeout = 0; timeout < 5000; timeout++) {
-		if (cpu_isset(cpu_id, cpu_online_map))
+		if (cpu_online(cpu_id))
 			break;
 		udelay(1000);
 	}
-	if (!cpu_isset(cpu_id, cpu_online_map))
+	if (!cpu_online(cpu_id))
 		BUG();
 
 	return 0;
@@ -375,14 +369,14 @@ void __init smp_cpus_done(unsigned int max_cpus)
 	unsigned long bogosum = 0;
 
 	for (timeout = 0; timeout < 5000; timeout++) {
-		if (cpus_equal(cpu_callin_map, cpu_online_map))
+		if (cpumask_equal(&cpu_callin_map, cpu_online_mask))
 			break;
 		udelay(1000);
 	}
-	if (!cpus_equal(cpu_callin_map, cpu_online_map))
+	if (!cpumask_equal(&cpu_callin_map, cpu_online_mask))
 		BUG();
 
-	for (cpu_id = 0 ; cpu_id < num_online_cpus() ; cpu_id++)
+	for_each_online_cpu(cpu_id)
 		show_cpu_info(cpu_id);
 
 	/*
@@ -390,7 +384,7 @@ void __init smp_cpus_done(unsigned int max_cpus)
 	 */
 	Dprintk("Before bogomips.\n");
 	if (cpucount) {
-		for_each_cpu_mask(cpu_id, cpu_online_map)
+		for_each_cpu(cpu_id,cpu_online_mask)
 			bogosum += cpu_data[cpu_id].loops_per_jiffy;
 
 		printk(KERN_INFO "Total of %d processors activated " \
@@ -402,7 +396,7 @@ void __init smp_cpus_done(unsigned int max_cpus)
 }
 
 /*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*/
-/* Activate a secondary processor Routins                                    */
+/* Activate a secondary processor Routines                                   */
 /*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*/
 
 /*==========================================================================*
@@ -425,8 +419,9 @@ void __init smp_cpus_done(unsigned int max_cpus)
 int __init start_secondary(void *unused)
 {
 	cpu_init();
+	preempt_disable();
 	smp_callin();
-	while (!cpu_isset(smp_processor_id(), smp_commenced_mask))
+	while (!cpumask_test_cpu(smp_processor_id(), &smp_commenced_mask))
 		cpu_relax();
 
 	smp_online();
@@ -437,7 +432,7 @@ int __init start_secondary(void *unused)
 	 */
 	local_flush_tlb_all();
 
-	cpu_idle();
+	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
 	return 0;
 }
 
@@ -464,7 +459,7 @@ static void __init smp_callin(void)
 	int cpu_id = smp_processor_id();
 	unsigned long timeout;
 
-	if (cpu_isset(cpu_id, cpu_callin_map)) {
+	if (cpumask_test_cpu(cpu_id, &cpu_callin_map)) {
 		printk("huh, phys CPU#%d, CPU#%d already present??\n",
 			phys_id, cpu_id);
 		BUG();
@@ -475,7 +470,7 @@ static void __init smp_callin(void)
 	timeout = jiffies + (2 * HZ);
 	while (time_before(jiffies, timeout)) {
 		/* Has the boot CPU finished it's STARTUP sequence ? */
-		if (cpu_isset(cpu_id, cpu_callout_map))
+		if (cpumask_test_cpu(cpu_id, &cpu_callout_map))
 			break;
 		cpu_relax();
 	}
@@ -487,12 +482,14 @@ static void __init smp_callin(void)
 	}
 
 	/* Allow the master to continue. */
-	cpu_set(cpu_id, cpu_callin_map);
+	cpumask_set_cpu(cpu_id, &cpu_callin_map);
 }
 
 static void __init smp_online(void)
 {
 	int cpu_id = smp_processor_id();
+
+	notify_cpu_starting(cpu_id);
 
 	local_irq_enable();
 
@@ -502,11 +499,11 @@ static void __init smp_online(void)
 	/* Save our processor parameters */
  	smp_store_cpu_info(cpu_id);
 
-	cpu_set(cpu_id, cpu_online_map);
+	set_cpu_online(cpu_id, true);
 }
 
 /*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*/
-/* Boot up CPUs common Routins                                               */
+/* Boot up CPUs common Routines                                              */
 /*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*/
 static void __init show_mp_info(int nr_cpu)
 {
@@ -591,7 +588,7 @@ int setup_profiling_timer(unsigned int multiplier)
 	 * accounting. At that time they also adjust their APIC timers
 	 * accordingly.
 	 */
-	for (i = 0; i < NR_CPUS; ++i)
+	for_each_possible_cpu(i)
 		per_cpu(prof_multiplier, i) = multiplier;
 
 	return 0;
@@ -627,4 +624,3 @@ static void __init unmap_cpu_to_physid(int cpu_id, int phys_id)
 	physid_2_cpu[phys_id] = -1;
 	cpu_2_physid[cpu_id] = -1;
 }
-

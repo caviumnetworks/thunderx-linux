@@ -6,15 +6,14 @@
 #ifndef NET_ATM_RESOURCES_H
 #define NET_ATM_RESOURCES_H
 
-#include <linux/config.h>
 #include <linux/atmdev.h>
+#include <linux/mutex.h>
 
 
 extern struct list_head atm_devs;
-extern spinlock_t atm_dev_lock;
+extern struct mutex atm_dev_mutex;
 
-
-int atm_dev_ioctl(unsigned int cmd, void __user *arg);
+int atm_dev_ioctl(unsigned int cmd, void __user *arg, int compat);
 
 
 #ifdef CONFIG_PROC_FS
@@ -43,4 +42,6 @@ static inline void atm_proc_dev_deregister(struct atm_dev *dev)
 
 #endif /* CONFIG_PROC_FS */
 
+int atm_register_sysfs(struct atm_dev *adev, struct device *parent);
+void atm_unregister_sysfs(struct atm_dev *adev);
 #endif

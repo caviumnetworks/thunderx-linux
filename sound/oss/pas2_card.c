@@ -1,10 +1,9 @@
 /*
- * sound/pas2_card.c
+ * sound/oss/pas2_card.c
  *
  * Detection routine for the Pro Audio Spectrum cards.
  */
 
-#include <linux/config.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
@@ -42,19 +41,19 @@ static int      pas_irq;
 static int      pas_sb_base;
 DEFINE_SPINLOCK(pas_lock);
 #ifndef CONFIG_PAS_JOYSTICK
-static int	joystick;
+static bool	joystick;
 #else
-static int 	joystick = 1;
+static bool 	joystick = 1;
 #endif
 #ifdef SYMPHONY_PAS
-static int 	symphony = 1;
+static bool 	symphony = 1;
 #else
-static int 	symphony;
+static bool 	symphony;
 #endif
 #ifdef BROKEN_BUS_CLOCK
-static int	broken_bus_clock = 1;
+static bool	broken_bus_clock = 1;
 #else
-static int	broken_bus_clock;
+static bool	broken_bus_clock;
 #endif
 
 static struct address_info cfg;
@@ -75,8 +74,6 @@ static char    *pas_model_names[] = {
  * to support other than the default base address
  */
 
-extern void     mix_write(unsigned char data, int ioaddr);
-
 unsigned char pas_read(int ioaddr)
 {
 	return inb(ioaddr + pas_translate_code);
@@ -89,7 +86,7 @@ void pas_write(unsigned char data, int ioaddr)
 
 /******************* Begin of the Interrupt Handler ********************/
 
-static irqreturn_t pasintr(int irq, void *dev_id, struct pt_regs *dummy)
+static irqreturn_t pasintr(int irq, void *dev_id)
 {
 	int             status;
 
@@ -157,9 +154,7 @@ static int __init config_pas_hw(struct address_info *hw_config)
 						 * 0x80
 						 */ , 0xB88);
 
-	pas_write(0x80
-		  | joystick?0x40:0
-		  ,0xF388);
+	pas_write(0x80 | (joystick ? 0x40 : 0), 0xF388);
 
 	if (pas_irq < 0 || pas_irq > 15)
 	{
@@ -336,6 +331,11 @@ static void __init attach_pas_card(struct address_info *hw_config)
 		{
 			char            temp[100];
 
+			if (pas_model < 0 ||
+			    pas_model >= ARRAY_SIZE(pas_model_names)) {
+				printk(KERN_ERR "pas2 unrecognized model.\n");
+				return;
+			}
 			sprintf(temp,
 			    "%s rev %d", pas_model_names[(int) pas_model],
 				    pas_read(0x2789));

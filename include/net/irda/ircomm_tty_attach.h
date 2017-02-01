@@ -22,9 +22,7 @@
  *     GNU General Public License for more details.
  * 
  *     You should have received a copy of the GNU General Public License 
- *     along with this program; if not, write to the Free Software 
- *     Foundation, Inc., 59 Temple Place, Suite 330, Boston, 
- *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *     
  ********************************************************************/
 
@@ -66,8 +64,8 @@ struct ircomm_tty_info {
         __u8      dlsap_sel;
 };
 
-extern char *ircomm_state[];
-extern char *ircomm_tty_state[];
+extern const char *const ircomm_state[];
+extern const char *const ircomm_tty_state[];
 
 int ircomm_tty_do_event(struct ircomm_tty_cb *self, IRCOMM_TTY_EVENT event,
 			struct sk_buff *skb, struct ircomm_tty_info *info);

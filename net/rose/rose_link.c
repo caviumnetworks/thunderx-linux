@@ -16,16 +16,15 @@
 #include <linux/string.h>
 #include <linux/sockios.h>
 #include <linux/net.h>
+#include <linux/slab.h>
 #include <net/ax25.h>
 #include <linux/inet.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
 #include <net/sock.h>
-#include <asm/system.h>
 #include <linux/fcntl.h>
 #include <linux/mm.h>
 #include <linux/interrupt.h>
-#include <linux/netfilter.h>
 #include <net/rose.h>
 
 static void rose_ftimer_expiry(unsigned long);
@@ -40,7 +39,8 @@ void rose_start_ftimer(struct rose_neigh *neigh)
 
 	neigh->ftimer.data     = (unsigned long)neigh;
 	neigh->ftimer.function = &rose_ftimer_expiry;
-	neigh->ftimer.expires  = jiffies + sysctl_rose_link_fail_timeout;
+	neigh->ftimer.expires  =
+		jiffies + msecs_to_jiffies(sysctl_rose_link_fail_timeout);
 
 	add_timer(&neigh->ftimer);
 }
@@ -51,7 +51,8 @@ static void rose_start_t0timer(struct rose_neigh *neigh)
 
 	neigh->t0timer.data     = (unsigned long)neigh;
 	neigh->t0timer.function = &rose_t0timer_expiry;
-	neigh->t0timer.expires  = jiffies + sysctl_rose_restart_request_timeout;
+	neigh->t0timer.expires  =
+		jiffies + msecs_to_jiffies(sysctl_rose_restart_request_timeout);
 
 	add_timer(&neigh->t0timer);
 }
@@ -99,15 +100,19 @@ static void rose_t0timer_expiry(unsigned long param)
 static int rose_send_frame(struct sk_buff *skb, struct rose_neigh *neigh)
 {
 	ax25_address *rose_call;
+	ax25_cb *ax25s;
 
 	if (ax25cmp(&rose_callsign, &null_ax25_address) == 0)
 		rose_call = (ax25_address *)neigh->dev->dev_addr;
 	else
 		rose_call = &rose_callsign;
 
+	ax25s = neigh->ax25;
 	neigh->ax25 = ax25_send_frame(skb, 260, rose_call, &neigh->callsign, neigh->digipeat, neigh->dev);
+	if (ax25s)
+		ax25_cb_put(ax25s);
 
-	return (neigh->ax25 != NULL);
+	return neigh->ax25 != NULL;
 }
 
 /*
@@ -118,15 +123,19 @@ static int rose_send_frame(struct sk_buff *skb, struct rose_neigh *neigh)
 static int rose_link_up(struct rose_neigh *neigh)
 {
 	ax25_address *rose_call;
+	ax25_cb *ax25s;
 
 	if (ax25cmp(&rose_callsign, &null_ax25_address) == 0)
 		rose_call = (ax25_address *)neigh->dev->dev_addr;
 	else
 		rose_call = &rose_callsign;
 
+	ax25s = neigh->ax25;
 	neigh->ax25 = ax25_find_cb(rose_call, &neigh->callsign, neigh->digipeat, neigh->dev);
+	if (ax25s)
+		ax25_cb_put(ax25s);
 
-	return (neigh->ax25 != NULL);
+	return neigh->ax25 != NULL;
 }
 
 /*
@@ -150,7 +159,8 @@ void rose_link_rx_restart(struct sk_buff *skb, struct rose_neigh *neigh, unsigne
 		break;
 
 	case ROSE_DIAGNOSTIC:
-		printk(KERN_WARNING "ROSE: received diagnostic #%d - %02X %02X %02X\n", skb->data[3], skb->data[4], skb->data[5], skb->data[6]);
+		pr_warn("ROSE: received diagnostic #%d - %3ph\n", skb->data[3],
+			skb->data + 4);
 		break;
 
 	default:
@@ -254,13 +264,6 @@ void rose_transmit_clear_request(struct rose_neigh *neigh, unsigned int lci, uns
 void rose_transmit_link(struct sk_buff *skb, struct rose_neigh *neigh)
 {
 	unsigned char *dptr;
-
-#if 0
-	if (call_fw_firewall(PF_ROSE, skb->dev, skb->data, NULL, &skb) != FW_ACCEPT) {
-		kfree_skb(skb);
-		return;
-	}
-#endif
 
 	if (neigh->loopback) {
 		rose_loopback_queue(skb, neigh);

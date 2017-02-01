@@ -22,7 +22,6 @@
 #include <linux/bootmem.h>
 
 #include <asm/ptrace.h>
-#include <asm/pci.h>
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
 
@@ -241,7 +240,8 @@ albacore_init_arch(void)
 				       size / 1024);
 		}
 #endif
-		reserve_bootmem_node(NODE_DATA(0), pci_mem, memtop - pci_mem);
+		reserve_bootmem_node(NODE_DATA(0), pci_mem, memtop -
+				pci_mem, BOOTMEM_DEFAULT);
 		printk("irongate_init_arch: temporarily reserving "
 			"region %08lx-%08lx for PCI\n", pci_mem, memtop - 1);
 	}
@@ -302,6 +302,7 @@ irongate_init_arch(void)
 #include <linux/vmalloc.h>
 #include <linux/agp_backend.h>
 #include <linux/agpgart.h>
+#include <linux/export.h>
 #include <asm/pgalloc.h>
 
 #define GET_PAGE_DIR_OFF(addr) (addr >> 22)
@@ -404,6 +405,7 @@ irongate_ioremap(unsigned long addr, unsigned long size)
 #endif
 	return (void __iomem *)vaddr;
 }
+EXPORT_SYMBOL(irongate_ioremap);
 
 void
 irongate_iounmap(volatile void __iomem *xaddr)
@@ -414,3 +416,4 @@ irongate_iounmap(volatile void __iomem *xaddr)
 	if (addr)
 		return vfree((void *)(PAGE_MASK & addr)); 
 }
+EXPORT_SYMBOL(irongate_iounmap);

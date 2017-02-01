@@ -24,7 +24,7 @@
  * 	    Phil Blundell <Philip.Blundell@pobox.com>
  *          Tim Waugh <tim@cyberelk.demon.co.uk>
  *	    Jose Renau <renau@acm.org>
- *          David Campbell <campbell@torque.net>
+ *          David Campbell
  *          Andrea Arcangeli
  */
 
@@ -217,6 +217,6 @@ extern void parport_gsc_dec_use_count(void);
 extern struct parport *parport_gsc_probe_port(unsigned long base,
 						unsigned long base_hi,
 						int irq, int dma,
-						struct pci_dev *dev);
+						struct parisc_device *padev);
 
 #endif	/* __DRIVERS_PARPORT_PARPORT_GSC_H */

@@ -23,9 +23,7 @@
  *     GNU General Public License for more details.
  * 
  *     You should have received a copy of the GNU General Public License 
- *     along with this program; if not, write to the Free Software 
- *     Foundation, Inc., 59 Temple Place, Suite 330, Boston, 
- *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *     
  ********************************************************************/
 
@@ -57,9 +55,6 @@ typedef union {
 	__u8  byte[2];
 } __u16_host_order;
 
-/* Same purpose, different application */
-#define u16ho(array) (* ((__u16 *) array))
-
 /* Types of discovery */
 typedef enum {
 	DISCOVERY_LOG,		/* What's in our discovery log */
@@ -80,7 +75,7 @@ typedef struct discovery_t {
 	irda_queue_t	q;		/* Must be first! */
 
 	discinfo_t	data;		/* Basic discovery information */
-	int		name_len;	/* Lenght of nickname */
+	int		name_len;	/* Length of nickname */
 
 	LAP_REASON	condition;	/* More info about the discovery */
 	int		gen_addr_bit;	/* Need to generate a new device

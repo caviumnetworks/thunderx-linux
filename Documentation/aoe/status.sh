@@ -1,5 +1,8 @@
 #! /bin/sh
 # collate and present sysfs information about AoE storage
+#
+# A more complete version of this script is aoe-stat, in the
+# aoetools.
 
 set -e
 format="%8s\t%8s\t%8s\n"
@@ -12,10 +15,6 @@ sysd=${sysfs_dir:-/sys}
 #test -z "`mount | grep sysfs`" && {
 test ! -d "$sysd/block" && {
 	echo "$me Error: sysfs is not mounted" 1>&2
-	exit 1
-}
-test -z "`lsmod | grep '^aoe'`" && {
-	echo  "$me Error: aoe module is not loaded" 1>&2
 	exit 1
 }
 

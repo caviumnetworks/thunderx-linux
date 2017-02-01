@@ -18,9 +18,7 @@
  *	GNU General Public License for more details.
  *
  *	You should have received a copy of the GNU General Public License 
- *	along with this program; if not, write to the Free Software 
- *	Foundation, Inc., 59 Temple Place, Suite 330, Boston, 
- *	MA 02111-1307 USA
+ *	along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  ********************************************************************/
 
@@ -39,45 +37,6 @@
 
 #ifndef PCI_CLASS_SUBCLASS_MASK
 #define PCI_CLASS_SUBCLASS_MASK		0xffff
-#endif
-
-/* in recent 2.5 interrupt handlers have non-void return value */
-#ifndef IRQ_RETVAL
-typedef void irqreturn_t;
-#define IRQ_NONE
-#define IRQ_HANDLED
-#define IRQ_RETVAL(x)
-#endif
-
-/* some stuff need to check kernelversion. Not all 2.5 stuff was present
- * in early 2.5.x - the test is merely to separate 2.4 from 2.5
- */
-#include <linux/version.h>
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,5,0)
-
-/* PDE() introduced in 2.5.4 */
-#ifdef CONFIG_PROC_FS
-#define PDE(inode) ((inode)->u.generic_ip)
-#endif
-
-/* irda crc16 calculation exported in 2.5.42 */
-#define irda_calc_crc16(fcs,buf,len)	(GOOD_FCS)
-
-/* we use this for unified pci device name access */
-#define PCIDEV_NAME(pdev)	((pdev)->name)
-
-#else /* 2.5 or later */
-
-/* recent 2.5/2.6 stores pci device names at varying places ;-) */
-#ifdef CONFIG_PCI_NAMES
-/* human readable name */
-#define PCIDEV_NAME(pdev)	((pdev)->pretty_name)
-#else
-/* whatever we get from the associated struct device - bus:slot:dev.fn id */
-#define PCIDEV_NAME(pdev)	(pci_name(pdev))
-#endif
-
 #endif
 
 /* ================================================================ */
@@ -248,7 +207,7 @@ enum vlsi_pio_irintr {
 	IRINTR_ACTEN	= 0x80,	/* activity interrupt enable */
 	IRINTR_ACTIVITY	= 0x40,	/* activity monitor (traffic detected) */
 	IRINTR_RPKTEN	= 0x20,	/* receive packet interrupt enable*/
-	IRINTR_RPKTINT	= 0x10,	/* rx-packet transfered from fifo to memory finished */
+	IRINTR_RPKTINT	= 0x10,	/* rx-packet transferred from fifo to memory finished */
 	IRINTR_TPKTEN	= 0x08,	/* transmit packet interrupt enable */
 	IRINTR_TPKTINT	= 0x04,	/* last bit of tx-packet+crc shifted to ir-pulser */
 	IRINTR_OE_EN	= 0x02,	/* UART rx fifo overrun error interrupt enable */
@@ -576,16 +535,16 @@ calc_width_bits(unsigned baudrate, unsigned widthselect, unsigned clockselect)
  */
 
 struct ring_descr_hw {
-	volatile u16	rd_count;	/* tx/rx count [11:0] */
-	u16		reserved;
+	volatile __le16	rd_count;	/* tx/rx count [11:0] */
+	__le16		reserved;
 	union {
-		u32	addr;		/* [23:0] of the buffer's busaddress */
+		__le32	addr;		/* [23:0] of the buffer's busaddress */
 		struct {
 			u8		addr_res[3];
 			volatile u8	status;		/* descriptor status */
-		} rd_s __attribute__((packed));
-	} rd_u __attribute((packed));
-} __attribute__ ((packed));
+		} __packed rd_s;
+	} __packed rd_u;
+} __packed;
 
 #define rd_addr		rd_u.addr
 #define rd_status	rd_u.rd_s.status
@@ -634,7 +593,7 @@ struct ring_descr {
 
 static inline int rd_is_active(struct ring_descr *rd)
 {
-	return ((rd->hw->rd_status & RD_ACTIVE) != 0);
+	return (rd->hw->rd_status & RD_ACTIVE) != 0;
 }
 
 static inline void rd_activate(struct ring_descr *rd)
@@ -656,7 +615,8 @@ static inline void rd_set_addr_status(struct ring_descr *rd, dma_addr_t a, u8 s)
 	 */
 
 	if ((a & ~DMA_MASK_MSTRPAGE)>>24 != MSTRPAGE_VALUE) {
-		IRDA_ERROR("%s: pci busaddr inconsistency!\n", __FUNCTION__);
+		net_err_ratelimited("%s: pci busaddr inconsistency!\n",
+				    __func__);
 		dump_stack();
 		return;
 	}
@@ -751,7 +711,6 @@ static inline struct ring_descr *ring_get(struct vlsi_ring *r)
 
 typedef struct vlsi_irda_dev {
 	struct pci_dev		*pdev;
-	struct net_device_stats	stats;
 
 	struct irlap_cb		*irlap;
 
@@ -764,10 +723,10 @@ typedef struct vlsi_irda_dev {
 	void			*virtaddr;
 	struct vlsi_ring	*tx_ring, *rx_ring;
 
-	struct timeval		last_rx;
+	ktime_t			last_rx;
 
 	spinlock_t		lock;
-	struct semaphore	sem;
+	struct mutex		mtx;
 
 	u8			resume_ok;	
 	struct proc_dir_entry	*proc_entry;
@@ -779,7 +738,7 @@ typedef struct vlsi_irda_dev {
 /* the remapped error flags we use for returning from frame
  * post-processing in vlsi_process_tx/rx() after it was completed
  * by the hardware. These functions either return the >=0 number
- * of transfered bytes in case of success or the negative (-)
+ * of transferred bytes in case of success or the negative (-)
  * of the or'ed error flags.
  */
 

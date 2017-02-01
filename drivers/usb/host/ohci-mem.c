@@ -1,24 +1,24 @@
 /*
  * OHCI HCD (Host Controller Driver) for USB.
- * 
+ *
  * (C) Copyright 1999 Roman Weissgaerber <weissg@vienna.at>
  * (C) Copyright 2000-2002 David Brownell <dbrownell@users.sourceforge.net>
- * 
+ *
  * This file is licenced under the GPL.
  */
 
 /*-------------------------------------------------------------------------*/
 
 /*
- * There's basically three types of memory:
+ * OHCI deals with three types of memory:
  *	- data used only by the HCD ... kmalloc is fine
  *	- async and periodic schedules, shared by HC and HCD ... these
  *	  need to use dma_pool or dma_alloc_coherent
  *	- driver buffers, read/written by HC ... the hcd glue or the
  *	  device driver provides us with dma addresses
  *
- * There's also PCI "register" data, which is memory mapped.
- * No memory seen by this driver is pagable.
+ * There's also "register" data, which is memory mapped.
+ * No memory seen by this driver (or any HCD) may be paged out.
  */
 
 /*-------------------------------------------------------------------------*/
@@ -28,7 +28,7 @@ static void ohci_hcd_init (struct ohci_hcd *ohci)
 	ohci->next_statechange = jiffies;
 	spin_lock_init (&ohci->lock);
 	INIT_LIST_HEAD (&ohci->pending);
-	INIT_WORK (&ohci->rh_resume, ohci_rh_resume, ohci_to_hcd(ohci));
+	INIT_LIST_HEAD(&ohci->eds_in_use);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -83,7 +83,7 @@ dma_to_td (struct ohci_hcd *hc, dma_addr_t td_dma)
 
 /* TDs ... */
 static struct td *
-td_alloc (struct ohci_hcd *hc, int mem_flags)
+td_alloc (struct ohci_hcd *hc, gfp_t mem_flags)
 {
 	dma_addr_t	dma;
 	struct td	*td;
@@ -117,7 +117,7 @@ td_free (struct ohci_hcd *hc, struct td *td)
 
 /* EDs ... */
 static struct ed *
-ed_alloc (struct ohci_hcd *hc, int mem_flags)
+ed_alloc (struct ohci_hcd *hc, gfp_t mem_flags)
 {
 	dma_addr_t	dma;
 	struct ed	*ed;

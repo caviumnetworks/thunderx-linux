@@ -1,13 +1,16 @@
 /*
- * linux/arch/m68k/mm/sun3dvma.c
+ * linux/arch/m68k/sun3/sun3dvma.c
  *
  * Copyright (C) 2000 Sam Creasey
  *
  * Contains common routines for sun3/sun3x DVMA management.
  */
 
-#include <linux/config.h>
+#include <linux/bootmem.h>
+#include <linux/init.h>
+#include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/gfp.h>
 #include <linux/mm.h>
 #include <linux/list.h>
 
@@ -29,7 +32,7 @@ static inline void dvma_unmap_iommu(unsigned long a, int b)
 extern void sun3_dvma_init(void);
 #endif
 
-unsigned long iommu_use[IOMMU_TOTAL_ENTRIES];
+static unsigned long *iommu_use;
 
 #define dvma_index(baddr) ((baddr - DVMA_START) >> DVMA_PAGE_SHIFT)
 
@@ -119,8 +122,7 @@ static inline int refill(void)
 		if(hole->end == prev->start) {
 			hole->size += prev->size;
 			hole->end = prev->end;
-			list_del(&(prev->list));
-			list_add(&(prev->list), &hole_cache);
+			list_move(&(prev->list), &hole_cache);
 			ret++;
 		}
 
@@ -182,8 +184,7 @@ static inline unsigned long get_baddr(int len, unsigned long align)
 #endif
 			return hole->end;
 		} else if(hole->size == newlen) {
-			list_del(&(hole->list));
-			list_add(&(hole->list), &hole_cache);
+			list_move(&(hole->list), &hole_cache);
 			dvma_entry_use(hole->start) = newlen;
 #ifdef DVMA_DEBUG
 			dvma_allocs++;
@@ -246,7 +247,7 @@ static inline int free_baddr(unsigned long baddr)
 
 }
 
-void dvma_init(void)
+void __init dvma_init(void)
 {
 
 	struct hole *hole;
@@ -266,7 +267,7 @@ void dvma_init(void)
 
 	list_add(&(hole->list), &hole_list);
 
-	memset(iommu_use, 0, sizeof(iommu_use));
+	iommu_use = alloc_bootmem(IOMMU_TOTAL_ENTRIES * sizeof(unsigned long));
 
 	dvma_unmap_iommu(DVMA_START, DVMA_SIZE);
 
@@ -276,7 +277,7 @@ void dvma_init(void)
 
 }
 
-inline unsigned long dvma_map_align(unsigned long kaddr, int len, int align)
+unsigned long dvma_map_align(unsigned long kaddr, int len, int align)
 {
 
 	unsigned long baddr;
@@ -315,6 +316,7 @@ inline unsigned long dvma_map_align(unsigned long kaddr, int len, int align)
 	BUG();
 	return 0;
 }
+EXPORT_SYMBOL(dvma_map_align);
 
 void dvma_unmap(void *baddr)
 {
@@ -330,7 +332,7 @@ void dvma_unmap(void *baddr)
 	return;
 
 }
-
+EXPORT_SYMBOL(dvma_unmap);
 
 void *dvma_malloc_align(unsigned long len, unsigned long align)
 {
@@ -370,6 +372,7 @@ void *dvma_malloc_align(unsigned long len, unsigned long align)
 	return (void *)vaddr;
 
 }
+EXPORT_SYMBOL(dvma_malloc_align);
 
 void dvma_free(void *vaddr)
 {
@@ -377,3 +380,4 @@ void dvma_free(void *vaddr)
 	return;
 
 }
+EXPORT_SYMBOL(dvma_free);

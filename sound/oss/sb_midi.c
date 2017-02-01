@@ -1,5 +1,5 @@
 /*
- * sound/sb_dsp.c
+ * sound/oss/sb_midi.c
  *
  * The low level driver for the Sound Blaster DS chips.
  *
@@ -12,6 +12,7 @@
  */
 
 #include <linux/spinlock.h>
+#include <linux/slab.h>
 
 #include "sound_config.h"
 
@@ -173,23 +174,23 @@ void sb_dsp_midi_init(sb_devc * devc, struct module *owner)
 		return;
 	}
 	std_midi_synth.midi_dev = devc->my_mididev = dev;
-	midi_devs[dev] = (struct midi_operations *)kmalloc(sizeof(struct midi_operations), GFP_KERNEL);
+	midi_devs[dev] = kmalloc(sizeof(struct midi_operations), GFP_KERNEL);
 	if (midi_devs[dev] == NULL)
 	{
 		printk(KERN_WARNING "Sound Blaster:  failed to allocate MIDI memory.\n");
 		sound_unload_mididev(dev);
-		  return;
+		return;
 	}
 	memcpy((char *) midi_devs[dev], (char *) &sb_midi_operations,
 	       sizeof(struct midi_operations));
 
 	if (owner)
-			midi_devs[dev]->owner = owner;
-	
+		midi_devs[dev]->owner = owner;
+
 	midi_devs[dev]->devc = devc;
 
 
-	midi_devs[dev]->converter = (struct synth_operations *)kmalloc(sizeof(struct synth_operations), GFP_KERNEL);
+	midi_devs[dev]->converter = kmalloc(sizeof(struct synth_operations), GFP_KERNEL);
 	if (midi_devs[dev]->converter == NULL)
 	{
 		  printk(KERN_WARNING "Sound Blaster:  failed to allocate MIDI memory.\n");

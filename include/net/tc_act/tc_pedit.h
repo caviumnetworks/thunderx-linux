@@ -3,12 +3,12 @@
 
 #include <net/act_api.h>
 
-struct tcf_pedit
-{
-	tca_gen(pedit);
-	unsigned char           nkeys;
-	unsigned char           flags;
-	struct tc_pedit_key     *keys;
+struct tcf_pedit {
+	struct tc_action	common;
+	unsigned char		tcfp_nkeys;
+	unsigned char		tcfp_flags;
+	struct tc_pedit_key	*tcfp_keys;
 };
+#define to_pedit(a) ((struct tcf_pedit *)a)
 
-#endif
+#endif /* __NET_TC_PED_H */

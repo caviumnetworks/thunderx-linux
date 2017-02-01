@@ -1,7 +1,7 @@
 /*
  * ip22-hpc.c: Routines for generic manipulation of the HPC controllers.
  *
- * Copyright (C) 1996 David S. Miller (dm@engr.sgi.com)
+ * Copyright (C) 1996 David S. Miller (davem@davemloft.net)
  * Copyright (C) 1998 Ralf Baechle
  */
 
@@ -49,7 +49,7 @@ void __init sgihpc_init(void)
 		sgint = &sgioc->int3;
 		system_type = "SGI Indy";
 	}
-	
+
 	sgi_ioc_reset = (SGIOC_RESET_PPORT | SGIOC_RESET_KBDMOUSE |
 			 SGIOC_RESET_EISA | SGIOC_RESET_ISDN |
 			 SGIOC_RESET_LC0OFF);

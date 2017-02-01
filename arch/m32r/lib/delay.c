@@ -5,10 +5,8 @@
  * Copyright (c) 2004  Hirokazu Takata
  */
 
-/* $Id$ */
-
-#include <linux/config.h>
 #include <linux/param.h>
+#include <linux/module.h>
 #ifdef CONFIG_SMP
 #include <linux/sched.h>
 #include <asm/current.h>
@@ -124,3 +122,8 @@ void __ndelay(unsigned long nsecs)
 {
 	__const_udelay(nsecs * 0x00005);  /* 2**32 / 1000000000 (rounded up) */
 }
+
+EXPORT_SYMBOL(__delay);
+EXPORT_SYMBOL(__const_udelay);
+EXPORT_SYMBOL(__udelay);
+EXPORT_SYMBOL(__ndelay);

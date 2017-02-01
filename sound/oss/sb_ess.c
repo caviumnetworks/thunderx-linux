@@ -97,19 +97,19 @@
  *
  * The documentation is an adventure: it's close but not fully accurate. I
  * found out that after a reset some registers are *NOT* reset, though the
- * docs say the would be. Interresting ones are 0x7f, 0x7d and 0x7a. They are
- * related to the Audio 2 channel. I also was suprised about the consequenses
+ * docs say the would be. Interesting ones are 0x7f, 0x7d and 0x7a. They are
+ * related to the Audio 2 channel. I also was surprised about the consequences
  * of writing 0x00 to 0x7f (which should be done by reset): The ES1887 moves
  * into ES1888 mode. This means that it claims IRQ 11, which happens to be my
  * ISDN adapter. Needless to say it no longer worked. I now understand why
  * after rebooting 0x7f already was 0x05, the value of my choice: the BIOS
  * did it.
  *
- * Oh, and this is another trap: in ES1887 docs mixer register 0x70 is decribed
- * as if it's exactly the same as register 0xa1. This is *NOT* true. The
- * description of 0x70 in ES1869 docs is accurate however.
+ * Oh, and this is another trap: in ES1887 docs mixer register 0x70 is
+ * described as if it's exactly the same as register 0xa1. This is *NOT* true.
+ * The description of 0x70 in ES1869 docs is accurate however.
  * Well, the assumption about ES1869 was wrong: register 0x70 is very much
- * like register 0xa1, except that bit 7 is allways 1, whatever you want
+ * like register 0xa1, except that bit 7 is always 1, whatever you want
  * it to be.
  *
  * When using audio 2 mixer register 0x72 seems te be meaningless. Only 0xa2
@@ -117,10 +117,10 @@
  *
  * Software reset not being able to reset all registers is great! Especially
  * the fact that register 0x78 isn't reset is great when you wanna change back
- * to single dma operation (simplex): audio 2 is still operation, and uses the
- * same dma as audio 1: your ess changes into a funny echo machine.
+ * to single dma operation (simplex): audio 2 is still operational, and uses
+ * the same dma as audio 1: your ess changes into a funny echo machine.
  *
- * Received the new that ES1688 is detected as a ES1788. Did some thinking:
+ * Received the news that ES1688 is detected as a ES1788. Did some thinking:
  * the ES1887 detection scheme suggests in step 2 to try if bit 3 of register
  * 0x64 can be changed. This is inaccurate, first I inverted the * check: "If
  * can be modified, it's a 1688", which lead to a correct detection
@@ -135,7 +135,7 @@
  * About recognition of ESS chips
  *
  * The distinction of ES688, ES1688, ES1788, ES1887 and ES1888 is described in
- * a (preliminary ??) datasheet on ES1887. It's aim is to identify ES1887, but
+ * a (preliminary ??) datasheet on ES1887. Its aim is to identify ES1887, but
  * during detection the text claims that "this chip may be ..." when a step
  * fails. This scheme is used to distinct between the above chips.
  * It appears however that some PnP chips like ES1868 are recognized as ES1788
@@ -156,9 +156,9 @@
  *
  * The existing ES1688 support didn't take care of the ES1688+ recording
  * levels very well. Whenever a device was selected (recmask) for recording
- * it's recording level was loud, and it couldn't be changed. The fact that
+ * its recording level was loud, and it couldn't be changed. The fact that
  * internal register 0xb4 could take care of RECLEV, didn't work meaning until
- * it's value was restored every time the chip was reset; this reset the
+ * its value was restored every time the chip was reset; this reset the
  * value of 0xb4 too. I guess that's what 4front also had (have?) trouble with.
  *
  * About ES1887 support:
@@ -168,10 +168,10 @@
  * corresponding playback levels, unless recmask says they aren't recorded. In
  * the latter case the recording volumes are 0.
  * Now recording levels of inputs can be controlled, by changing the playback
- * levels. Futhermore several devices can be recorded together (which is not
- * possible with the ES1688.
+ * levels. Furthermore several devices can be recorded together (which is not
+ * possible with the ES1688).
  * Besides the separate recording level control for each input, the common
- * recordig level can also be controlled by RECLEV as described above.
+ * recording level can also be controlled by RECLEV as described above.
  *
  * Not only ES1887 have this recording mixer. I know the following from the
  * documentation:
@@ -604,7 +604,7 @@ static void ess_audio_output_block_audio2
 	ess_chgmixer (devc, 0x78, 0x03, 0x03);   /* Go */
 
 	devc->irq_mode_16 = IMODE_OUTPUT;
-		devc->intr_active_16 = 1;
+	devc->intr_active_16 = 1;
 }
 
 static void ess_audio_output_block
@@ -782,7 +782,7 @@ printk(KERN_INFO "FKS: ess_handle_channel %s irq_mode=%d\n", channel, irq_mode);
 			break;
 
 		default:;
-			/* printk(KERN_WARN "ESS: Unexpected interrupt\n"); */
+			/* printk(KERN_WARNING "ESS: Unexpected interrupt\n"); */
 	}
 }
 
@@ -865,8 +865,6 @@ printk(KERN_INFO "FKS: ess_dsp_reset 1\n");
 ess_show_mixerregs (devc);
 #endif
 
-	DEB(printk("Entered ess_dsp_reset()\n"));
-
 	outb(3, DSP_RESET); /* Reset FIFO too */
 
 	udelay(10);
@@ -880,8 +878,6 @@ ess_show_mixerregs (devc);
 		return 0;   /* Sorry */
 	}
 	ess_extended (devc);
-
-	DEB(printk("sb_dsp_reset() OK\n"));
 
 #ifdef FKS_LOGGING
 printk(KERN_INFO "FKS: dsp_reset 2\n");
@@ -1104,15 +1100,15 @@ int ess_init(sb_devc * devc, struct address_info *hw_config)
 		default:
 			printk (KERN_ERR "Invalid esstype=%d specified\n", devc->sbmo.esstype);
 			return 0;
-		};
+		}
 		if (submodel != -1) {
 			devc->submodel = submodel;
 			sprintf (modelname, "ES%d", devc->sbmo.esstype);
 			chip = modelname;
-		};
+		}
 		if (chip == NULL && (ess_minor & 0x0f) < 8) {
 			chip = "ES688";
-		};
+		}
 #ifdef FKS_TEST
 FKS_test (devc);
 #endif
@@ -1122,7 +1118,7 @@ FKS_test (devc);
 		 */
 		if (chip == NULL && devc->sbmo.esstype == ESSTYPE_LIKE20) {
 			chip = "ES1688";
-		};
+		}
 
 		if (chip == NULL) {
 			int type;
@@ -1150,8 +1146,8 @@ FKS_test (devc);
 				if ((type & 0x00ff) != ((type >> 8) & 0x00ff)) {
 					printk ("ess_init: Unrecognized %04x\n", type);
 				}
-			};
-		};
+			}
+		}
 #if 0
 		/*
 		 * this one failed:
@@ -1182,22 +1178,17 @@ FKS_test (devc);
 				chip = "ES1788";
 				devc->submodel = SUBMDL_ES1788;
 			}
-		};
+		}
 		if (chip == NULL) {
 			chip = "ES1688";
-		};
+		}
 
-	    printk ( KERN_INFO "ESS chip %s %s%s\n"
-               , chip
-               , ( devc->sbmo.esstype == ESSTYPE_DETECT || devc->sbmo.esstype == ESSTYPE_LIKE20
-                 ? "detected"
-                 : "specified"
-                 )
-               , ( devc->sbmo.esstype == ESSTYPE_LIKE20
-                 ? " (kernel 2.0 compatible)"
-                 : ""
-                 )
-               );
+		printk(KERN_INFO "ESS chip %s %s%s\n", chip,
+		       (devc->sbmo.esstype == ESSTYPE_DETECT ||
+			devc->sbmo.esstype == ESSTYPE_LIKE20) ?
+				"detected" : "specified",
+			devc->sbmo.esstype == ESSTYPE_LIKE20 ?
+				" (kernel 2.0 compatible)" : "");
 
 		sprintf(name,"ESS %s AudioDrive (rev %d)", chip, ess_minor & 0x0f);
 	} else {
@@ -1293,7 +1284,7 @@ printk(KERN_INFO "ess_set_dma_hw: dma8=%d,dma16=%d,dup=%d\n"
 			default:
 				printk(KERN_ERR "ESS1887: Invalid DMA16 %d\n", dma);
 				return 0;
-			};
+			}
 			ess_chgmixer (devc, 0x78, 0x20, dma16_bits);
 			ess_chgmixer (devc, 0x7d, 0x07, dma_bits);
 		}
@@ -1544,7 +1535,7 @@ static int ess_has_rec_mixer (int submodel)
 		return 1;
 	default:
 		return 0;
-	};
+	}
 };
 
 #ifdef FKS_LOGGING
@@ -1584,7 +1575,7 @@ printk(KERN_INFO "FKS: write mixer %x: %x\n", port, value);
 		udelay(20);
 		outb(((unsigned char) (value & 0xff)), MIXER_DATA);
 		udelay(20);
-	};
+	}
 	spin_unlock_irqrestore(&devc->lock, flags);
 }
 
@@ -1722,7 +1713,6 @@ printk (KERN_INFO "FKS: es_rec_set_recmask mask = %x\n", mask);
 				right = (value & 0x0000ff00) >> 8;
 			} else {				/* Turn it off (3)  */
 				left  = 0;
-				left  = 0;
 				right = 0;
 			}
 			sb_common_mixer_set(devc, i + ES_REC_MIXER_RECDIFF, left, right);
@@ -1762,7 +1752,7 @@ int ess_mixer_reset (sb_devc * devc)
 			ess_chgmixer(devc, 0x7a, 0x18, 0x08);
 			ess_chgmixer(devc, 0x1c, 0x07, 0x07);
 			break;
-		};
+		}
 		/*
 		 * Call set_recmask for proper initialization
 		 */

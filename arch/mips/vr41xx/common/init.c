@@ -1,7 +1,7 @@
 /*
  *  init.c, Common initialization routines for NEC VR4100 series.
  *
- *  Copyright (C) 2003-2005  Yoichi Yuasa <yuasa@hh.iij4u.or.jp>
+ *  Copyright (C) 2003-2009  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -24,6 +24,7 @@
 
 #include <asm/bootinfo.h>
 #include <asm/time.h>
+#include <asm/vr41xx/irq.h>
 #include <asm/vr41xx/vr41xx.h>
 
 #define IO_MEM_RESOURCE_START	0UL
@@ -35,9 +36,11 @@ static void __init iomem_resource_init(void)
 	iomem_resource.end = IO_MEM_RESOURCE_END;
 }
 
-static void __init setup_timer_frequency(void)
+void __init plat_time_init(void)
 {
 	unsigned long tclock;
+
+	vr41xx_calculate_clock_frequency();
 
 	tclock = vr41xx_get_tclock_frequency();
 	if (current_cpu_data.processor_id == PRID_VR4131_REV2_0 ||
@@ -47,15 +50,11 @@ static void __init setup_timer_frequency(void)
 		mips_hpt_frequency = tclock / 4;
 }
 
-static void __init setup_timer_irq(struct irqaction *irq)
+void __init plat_mem_setup(void)
 {
-	setup_irq(TIMER_IRQ, irq);
-}
+	iomem_resource_init();
 
-static void __init timer_init(void)
-{
-	board_time_init = setup_timer_frequency;
-	board_timer_setup = setup_timer_irq;
+	vr41xx_siu_setup();
 }
 
 void __init prom_init(void)
@@ -67,19 +66,12 @@ void __init prom_init(void)
 	argv = (char **)fw_arg1;
 
 	for (i = 1; i < argc; i++) {
-		strcat(arcs_cmdline, argv[i]);
+		strlcat(arcs_cmdline, argv[i], COMMAND_LINE_SIZE);
 		if (i < (argc - 1))
-			strcat(arcs_cmdline, " ");
+			strlcat(arcs_cmdline, " ", COMMAND_LINE_SIZE);
 	}
-
-	vr41xx_calculate_clock_frequency();
-
-	timer_init();
-
-	iomem_resource_init();
 }
 
-unsigned long __init prom_free_prom_memory (void)
+void __init prom_free_prom_memory(void)
 {
-	return 0UL;
 }

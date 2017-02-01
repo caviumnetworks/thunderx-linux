@@ -15,23 +15,14 @@
 #define IRDA_SIR_H
 
 #include <linux/netdevice.h>
+#include <linux/workqueue.h>
 
 #include <net/irda/irda.h>
 #include <net/irda/irda_device.h>		// iobuff_t
 
-/* FIXME: unify irda_request with sir_fsm! */
-
-struct irda_request {
-	struct list_head lh_request;
-	unsigned long pending;
-	void (*func)(void *);
-	void *data;
-	struct timer_list timer;
-};
-
 struct sir_fsm {
 	struct semaphore	sem;
-	struct irda_request	rq;
+	struct delayed_work	work;
 	unsigned		state, substate;
 	int			param;
 	int			result;
@@ -111,30 +102,29 @@ struct sir_driver {
 
 /* exported */
 
-extern int irda_register_dongle(struct dongle_driver *new);
-extern int irda_unregister_dongle(struct dongle_driver *drv);
+int irda_register_dongle(struct dongle_driver *new);
+int irda_unregister_dongle(struct dongle_driver *drv);
 
-extern struct sir_dev * sirdev_get_instance(const struct sir_driver *drv, const char *name);
-extern int sirdev_put_instance(struct sir_dev *self);
+struct sir_dev *sirdev_get_instance(const struct sir_driver *drv,
+				    const char *name);
+int sirdev_put_instance(struct sir_dev *self);
 
-extern int sirdev_set_dongle(struct sir_dev *dev, IRDA_DONGLE type);
-extern void sirdev_write_complete(struct sir_dev *dev);
-extern int sirdev_receive(struct sir_dev *dev, const unsigned char *cp, size_t count);
+int sirdev_set_dongle(struct sir_dev *dev, IRDA_DONGLE type);
+void sirdev_write_complete(struct sir_dev *dev);
+int sirdev_receive(struct sir_dev *dev, const unsigned char *cp, size_t count);
 
 /* low level helpers for SIR device/dongle setup */
-extern int sirdev_raw_write(struct sir_dev *dev, const char *buf, int len);
-extern int sirdev_raw_read(struct sir_dev *dev, char *buf, int len);
-extern int sirdev_set_dtr_rts(struct sir_dev *dev, int dtr, int rts);
+int sirdev_raw_write(struct sir_dev *dev, const char *buf, int len);
+int sirdev_raw_read(struct sir_dev *dev, char *buf, int len);
+int sirdev_set_dtr_rts(struct sir_dev *dev, int dtr, int rts);
 
 /* not exported */
 
-extern int sirdev_get_dongle(struct sir_dev *self, IRDA_DONGLE type);
-extern int sirdev_put_dongle(struct sir_dev *self);
+int sirdev_get_dongle(struct sir_dev *self, IRDA_DONGLE type);
+int sirdev_put_dongle(struct sir_dev *self);
 
-extern void sirdev_enable_rx(struct sir_dev *dev);
-extern int sirdev_schedule_request(struct sir_dev *dev, int state, unsigned param);
-extern int __init irda_thread_create(void);
-extern void __exit irda_thread_join(void);
+void sirdev_enable_rx(struct sir_dev *dev);
+int sirdev_schedule_request(struct sir_dev *dev, int state, unsigned param);
 
 /* inline helpers */
 
@@ -171,7 +161,6 @@ static inline int sirdev_schedule_mode(struct sir_dev *dev, int mode)
 
 struct sir_dev {
 	struct net_device *netdev;
-	struct net_device_stats stats;
 
 	struct irlap_cb    *irlap;
 

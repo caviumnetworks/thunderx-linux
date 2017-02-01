@@ -10,10 +10,6 @@
  *  VIDC sound function prototypes
  */
 
-/* vidc.c */
-
-extern int vidc_busy;
-
 /* vidc_fill.S */
 
 /*
@@ -37,7 +33,7 @@ extern unsigned long vidc_fill_2x16_s(unsigned long ibuf, unsigned long iend,
  * DMA Interrupt handler
  */
 
-extern irqreturn_t vidc_sound_dma_irq(int irqnr, void *ref, struct pt_regs *regs);
+extern irqreturn_t vidc_sound_dma_irq(int irqnr, void *ref);
 
 /*
  * Filler routine pointer

@@ -2,7 +2,7 @@
 # Joystick driver configuration
 #
 menuconfig INPUT_JOYSTICK
-	bool "Joysticks"
+	bool "Joysticks/Gamepads"
 	help
 	  If you have a joystick, 6dof controller, gamepad, steering wheel,
 	  weapon control system or something like that you can say Y here
@@ -32,7 +32,7 @@ config JOYSTICK_ANALOG
 	  module will be called analog.
 
 config JOYSTICK_A3D
-	tristate "Assasin 3D and MadCatz Panther devices"
+	tristate "Assassin 3D and MadCatz Panther devices"
 	select GAMEPORT
 	help
 	  Say Y here if you have an FPGaming or MadCatz controller using the
@@ -193,10 +193,23 @@ config JOYSTICK_TWIDJOY
 	  To compile this driver as a module, choose M here: the
 	  module will be called twidjoy.
 
+config JOYSTICK_ZHENHUA
+	tristate "5-byte Zhenhua RC transmitter"
+	select SERIO
+	select BITREVERSE
+	help
+	  Say Y here if you have a Zhen Hua PPM-4CH transmitter which is
+	  supplied with a ready to fly micro electric indoor helicopters
+	  such as EasyCopter, Lama, MiniCopter, DragonFly or Jabo and want
+	  to use it via serial cable as a joystick.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called zhenhua.
+
 config JOYSTICK_DB9
 	tristate "Multisystem, Sega Genesis, Saturn joysticks and gamepads"
 	depends on PARPORT
-	---help---
+	help
 	  Say Y here if you have a Sega Master System gamepad, Sega Genesis
 	  gamepad, Sega Saturn gamepad, or a Multisystem -- Atari, Amiga,
 	  Commodore, Amstrad CPC joystick connected to your parallel port.
@@ -209,6 +222,7 @@ config JOYSTICK_DB9
 config JOYSTICK_GAMECON
 	tristate "Multisystem, NES, SNES, N64, PSX joysticks and gamepads"
 	depends on PARPORT
+	select INPUT_FF_MEMLESS
 	---help---
 	  Say Y here if you have a Nintendo Entertainment System gamepad,
 	  Super Nintendo Entertainment System gamepad, Nintendo 64 gamepad,
@@ -242,6 +256,16 @@ config JOYSTICK_AMIGA
 	  To compile this driver as a module, choose M here: the
 	  module will be called amijoy.
 
+config JOYSTICK_AS5011
+	tristate "Austria Microsystem AS5011 joystick"
+	depends on I2C
+	help
+	  Say Y here if you have an AS5011 digital joystick connected to your
+	  system.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called as5011.
+
 config JOYSTICK_JOYDUMP
 	tristate "Gameport data dumper"
 	select GAMEPORT
@@ -252,5 +276,58 @@ config JOYSTICK_JOYDUMP
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called joydump.
+
+config JOYSTICK_XPAD
+	tristate "X-Box gamepad support"
+	depends on USB_ARCH_HAS_HCD
+	select USB
+	help
+	  Say Y here if you want to use the X-Box pad with your computer.
+	  Make sure to say Y to "Joystick support" (CONFIG_INPUT_JOYDEV)
+	  and/or "Event interface support" (CONFIG_INPUT_EVDEV) as well.
+
+	  For information about how to connect the X-Box pad to USB, see
+	  <file:Documentation/input/xpad.txt>.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called xpad.
+
+config JOYSTICK_XPAD_FF
+	bool "X-Box gamepad rumble support"
+	depends on JOYSTICK_XPAD && INPUT
+	select INPUT_FF_MEMLESS
+	---help---
+	  Say Y here if you want to take advantage of xbox 360 rumble features.
+
+config JOYSTICK_XPAD_LEDS
+	bool "LED Support for Xbox360 controller 'BigX' LED"
+	depends on JOYSTICK_XPAD && (LEDS_CLASS=y || LEDS_CLASS=JOYSTICK_XPAD)
+	---help---
+	  This option enables support for the LED which surrounds the Big X on
+	  XBox 360 controller.
+
+config JOYSTICK_WALKERA0701
+	tristate "Walkera WK-0701 RC transmitter"
+	depends on HIGH_RES_TIMERS && PARPORT
+	help
+	  Say Y or M here if you have a Walkera WK-0701 transmitter which is
+	  supplied with a ready to fly Walkera helicopters such as HM36,
+	  HM37, HM60 and want to use it via parport as a joystick. More
+	  information is available: <file:Documentation/input/walkera0701.txt>
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called walkera0701.
+
+config JOYSTICK_MAPLE
+	tristate "Dreamcast control pad"
+	depends on MAPLE
+	help
+	  Say Y here if you have a SEGA Dreamcast and want to use your
+	  controller as a joystick.
+
+	  Most Dreamcast users will say Y.
+
+	  To compile this as a module choose M here: the module will be called
+	  maplecontrol.
 
 endif

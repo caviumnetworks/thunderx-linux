@@ -1,13 +1,13 @@
 #include <asm/lasat/head.h>
 
 	.text
-	.section .text.start, "ax"
+	.section .text..start, "ax"
 	.set noreorder
 	.set mips3
 
 	/* Magic words identifying a software image */
 	.word	LASAT_K_MAGIC0_VAL
-	.word 	LASAT_K_MAGIC1_VAL
+	.word	LASAT_K_MAGIC1_VAL
 
 	/* Image header version */
 	.word	0x00000002
@@ -27,5 +27,5 @@ reldate:
 	.word	TIMESTAMP
 
 	.org	0x50
-release:	
+release:
 	.string VERSION

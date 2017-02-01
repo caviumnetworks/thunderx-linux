@@ -1,5 +1,5 @@
 /*
- * sound/uart6850.c
+ * sound/oss/uart6850.c
  *
  *
  * Copyright (C) by Hannu Savolainen 1993-1997
@@ -78,8 +78,7 @@ static void (*midi_input_intr) (int dev, unsigned char data);
 static void poll_uart6850(unsigned long dummy);
 
 
-static struct timer_list uart6850_timer =
-		TIMER_INITIALIZER(poll_uart6850, 0, 0);
+static DEFINE_TIMER(uart6850_timer, poll_uart6850, 0, 0);
 
 static void uart6850_input_loop(void)
 {
@@ -105,7 +104,7 @@ static void uart6850_input_loop(void)
 	}
 }
 
-static irqreturn_t m6850intr(int irq, void *dev_id, struct pt_regs *dummy)
+static irqreturn_t m6850intr(int irq, void *dev_id)
 {
 	if (input_avail())
 		uart6850_input_loop();
@@ -147,7 +146,7 @@ static int uart6850_open(int dev, int mode,
 	{
 /*		  printk("Midi6850: Midi busy\n");*/
 		  return -EBUSY;
-	};
+	}
 
 	uart6850_cmd(UART_RESET);
 	uart6850_input_loop();

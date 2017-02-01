@@ -21,44 +21,48 @@
 #include <linux/kernel.h>
 #include <linux/nubus.h>
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/init.h>
+#include <linux/module.h>
+
 #include <asm/uaccess.h>
 #include <asm/byteorder.h>
 
 static int
-get_nubus_dev_info(char *buf, char **start, off_t pos, int count)
+nubus_devices_proc_show(struct seq_file *m, void *v)
 {
 	struct nubus_dev *dev = nubus_devices;
-	off_t at = 0;
-	int len, cnt;
 
-	cnt = 0;
-	while (dev && count > cnt) {
-		len = sprintf(buf, "%x\t%04x %04x %04x %04x",
+	while (dev) {
+		seq_printf(m, "%x\t%04x %04x %04x %04x",
 			      dev->board->slot,
 			      dev->category,
 			      dev->type,
 			      dev->dr_sw,
 			      dev->dr_hw);
-		len += sprintf(buf+len,
-			       "\t%08lx",
-			       dev->board->slot_addr);
-		buf[len++] = '\n';
-		at += len;
-		if (at >= pos) {
-			if (!*start) {
-				*start = buf + (pos - (at - len));
-				cnt = at - pos;
-			} else
-				cnt += len;
-			buf += len;
-		}
+		seq_printf(m, "\t%08lx\n", dev->board->slot_addr);
 		dev = dev->next;
 	}
-	return (count > cnt) ? cnt : count;
+	return 0;
 }
 
+static int nubus_devices_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, nubus_devices_proc_show, NULL);
+}
+
+static const struct file_operations nubus_devices_proc_fops = {
+	.open		= nubus_devices_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static struct proc_dir_entry *proc_bus_nubus_dir;
+
+static const struct file_operations nubus_proc_subdir_fops = {
+#warning Need to set some I/O handlers here
+};
 
 static void nubus_proc_subdir(struct nubus_dev* dev,
 			      struct proc_dir_entry* parent,
@@ -72,9 +76,10 @@ static void nubus_proc_subdir(struct nubus_dev* dev,
 		struct proc_dir_entry* e;
 		
 		sprintf(name, "%x", ent.type);
-		e = create_proc_entry(name, S_IFREG | S_IRUGO |
-				      S_IWUSR, parent);
-		if (!e) return;
+		e = proc_create(name, S_IFREG | S_IRUGO | S_IWUSR, parent,
+				&nubus_proc_subdir_fops);
+		if (!e)
+			return;
 	}
 }
 
@@ -140,20 +145,74 @@ int nubus_proc_attach_device(struct nubus_dev *dev)
 
 	return 0;
 }
+EXPORT_SYMBOL(nubus_proc_attach_device);
 
-/* FIXME: this is certainly broken! */
-int nubus_proc_detach_device(struct nubus_dev *dev)
+/*
+ * /proc/nubus stuff
+ */
+static int nubus_proc_show(struct seq_file *m, void *v)
 {
-	struct proc_dir_entry *e;
+	const struct nubus_board *board = v;
 
-	if ((e = dev->procdir)) {
-		if (atomic_read(&e->count))
-			return -EBUSY;
-		remove_proc_entry(e->name, proc_bus_nubus_dir);
-		dev->procdir = NULL;
-	}
+	/* Display header on line 1 */
+	if (v == SEQ_START_TOKEN)
+		seq_puts(m, "Nubus devices found:\n");
+	else
+		seq_printf(m, "Slot %X: %s\n", board->slot, board->name);
 	return 0;
 }
+
+static void *nubus_proc_start(struct seq_file *m, loff_t *_pos)
+{
+	struct nubus_board *board;
+	unsigned pos;
+
+	if (*_pos > LONG_MAX)
+		return NULL;
+	pos = *_pos;
+	if (pos == 0)
+		return SEQ_START_TOKEN;
+	for (board = nubus_boards; board; board = board->next)
+		if (--pos == 0)
+			break;
+	return board;
+}
+
+static void *nubus_proc_next(struct seq_file *p, void *v, loff_t *_pos)
+{
+	/* Walk the list of NuBus boards */
+	struct nubus_board *board = v;
+
+	++*_pos;
+	if (v == SEQ_START_TOKEN)
+		board = nubus_boards;
+	else if (board)
+		board = board->next;
+	return board;
+}
+
+static void nubus_proc_stop(struct seq_file *p, void *v)
+{
+}
+
+static const struct seq_operations nubus_proc_seqops = {
+	.start	= nubus_proc_start,
+	.next	= nubus_proc_next,
+	.stop	= nubus_proc_stop,
+	.show	= nubus_proc_show,
+};
+
+static int nubus_proc_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &nubus_proc_seqops);
+}
+
+static const struct file_operations nubus_proc_fops = {
+	.open		= nubus_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release,
+};
 
 void __init proc_bus_nubus_add_devices(void)
 {
@@ -165,10 +224,10 @@ void __init proc_bus_nubus_add_devices(void)
 
 void __init nubus_proc_init(void)
 {
+	proc_create("nubus", 0, NULL, &nubus_proc_fops);
 	if (!MACH_IS_MAC)
 		return;
-	proc_bus_nubus_dir = proc_mkdir("nubus", proc_bus);
-	create_proc_info_entry("devices", 0, proc_bus_nubus_dir,
-				get_nubus_dev_info);
+	proc_bus_nubus_dir = proc_mkdir("bus/nubus", NULL);
+	proc_create("devices", 0, proc_bus_nubus_dir, &nubus_devices_proc_fops);
 	proc_bus_nubus_add_devices();
 }

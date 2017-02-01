@@ -1,5 +1,5 @@
 /*
- * sound/pss.c
+ * sound/oss/pss.c
  *
  * The low level driver for the Personal Sound System (ECHO ESC614).
  *
@@ -46,7 +46,7 @@
  *          load the driver as it did in previous versions.
  * 04-07-1999: Anthony Barbachan <barbcode@xmen.cis.fordham.edu>
  *          Added module parameter pss_firmware to allow the user to tell 
- *          the driver where the fireware file is located.  The default 
+ *          the driver where the firmware file is located.  The default 
  *          setting is the previous hardcoded setting "/etc/sound/pss_synth".
  * 00-03-03: Christoph Hellwig <chhellwig@infradead.org>
  *	    Adapted to module_init/module_exit
@@ -57,7 +57,6 @@
  */
 
 
-#include <linux/config.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/spinlock.h>
@@ -118,40 +117,40 @@
 
 /* If compiled into kernel, it enable or disable pss mixer */
 #ifdef CONFIG_PSS_MIXER
-static int pss_mixer = 1;
+static bool pss_mixer = 1;
 #else
-static int pss_mixer;
+static bool pss_mixer;
 #endif
 
 
-typedef struct pss_mixerdata {
+struct pss_mixerdata {
 	unsigned int volume_l;
 	unsigned int volume_r;
 	unsigned int bass;
 	unsigned int treble;
 	unsigned int synth;
-} pss_mixerdata;
+};
 
-typedef struct pss_confdata {
+struct pss_confdata {
 	int             base;
 	int             irq;
 	int             dma;
 	int            *osp;
-	pss_mixerdata   mixer;
+	struct pss_mixerdata mixer;
 	int             ad_mixer_dev;
-} pss_confdata;
+};
   
-static pss_confdata pss_data;
-static pss_confdata *devc = &pss_data;
+static struct pss_confdata pss_data;
+static struct pss_confdata *devc = &pss_data;
 static DEFINE_SPINLOCK(lock);
 
 static int      pss_initialized;
 static int      nonstandard_microcode;
 static int	pss_cdrom_port = -1;	/* Parameter for the PSS cdrom port */
-static int	pss_enable_joystick;    /* Parameter for enabling the joystick */
+static bool	pss_enable_joystick;    /* Parameter for enabling the joystick */
 static coproc_operations pss_coproc_operations;
 
-static void pss_write(pss_confdata *devc, int data)
+static void pss_write(struct pss_confdata *devc, int data)
 {
 	unsigned long i, limit;
 
@@ -207,7 +206,7 @@ static int __init probe_pss(struct address_info *hw_config)
 	return 1;
 }
 
-static int set_irq(pss_confdata * devc, int dev, int irq)
+static int set_irq(struct pss_confdata *devc, int dev, int irq)
 {
 	static unsigned short irq_bits[16] =
 	{
@@ -233,17 +232,15 @@ static int set_irq(pss_confdata * devc, int dev, int irq)
 	return 1;
 }
 
-static int set_io_base(pss_confdata * devc, int dev, int base)
+static void set_io_base(struct pss_confdata *devc, int dev, int base)
 {
 	unsigned short  tmp = inw(REG(dev)) & 0x003f;
 	unsigned short  bits = (base & 0x0ffc) << 4;
 
 	outw(bits | tmp, REG(dev));
-
-	return 1;
 }
 
-static int set_dma(pss_confdata * devc, int dev, int dma)
+static int set_dma(struct pss_confdata *devc, int dev, int dma)
 {
 	static unsigned short dma_bits[8] =
 	{
@@ -267,18 +264,18 @@ static int set_dma(pss_confdata * devc, int dev, int dma)
 	return 1;
 }
 
-static int pss_reset_dsp(pss_confdata * devc)
+static int pss_reset_dsp(struct pss_confdata *devc)
 {
 	unsigned long   i, limit = jiffies + HZ/10;
 
 	outw(0x2000, REG(PSS_CONTROL));
-	for (i = 0; i < 32768 && (limit-jiffies >= 0); i++)
+	for (i = 0; i < 32768 && time_after_eq(limit, jiffies); i++)
 		inw(REG(PSS_CONTROL));
 	outw(0x0000, REG(PSS_CONTROL));
 	return 1;
 }
 
-static int pss_put_dspword(pss_confdata * devc, unsigned short word)
+static int pss_put_dspword(struct pss_confdata *devc, unsigned short word)
 {
 	int i, val;
 
@@ -294,7 +291,7 @@ static int pss_put_dspword(pss_confdata * devc, unsigned short word)
 	return 0;
 }
 
-static int pss_get_dspword(pss_confdata * devc, unsigned short *word)
+static int pss_get_dspword(struct pss_confdata *devc, unsigned short *word)
 {
 	int i, val;
 
@@ -310,7 +307,8 @@ static int pss_get_dspword(pss_confdata * devc, unsigned short *word)
 	return 0;
 }
 
-static int pss_download_boot(pss_confdata * devc, unsigned char *block, int size, int flags)
+static int pss_download_boot(struct pss_confdata *devc, unsigned char *block,
+			     int size, int flags)
 {
 	int i, val, count;
 	unsigned long limit;
@@ -362,7 +360,7 @@ static int pss_download_boot(pss_confdata * devc, unsigned char *block, int size
 		{
 			/*_____ Send the next byte */
 			outw (*block++, REG (PSS_DATA));
-		};
+		}
 		count++;
 	}
 
@@ -372,11 +370,11 @@ static int pss_download_boot(pss_confdata * devc, unsigned char *block, int size
 		outw(0, REG(PSS_DATA));
 
 		limit = jiffies + HZ/10;
-		for (i = 0; i < 32768 && (limit - jiffies >= 0); i++)
+		for (i = 0; i < 32768 && time_after_eq(limit, jiffies); i++)
 			val = inw(REG(PSS_STATUS));
 
 		limit = jiffies + HZ/10;
-		for (i = 0; i < 32768 && (limit-jiffies >= 0); i++)
+		for (i = 0; i < 32768 && time_after_eq(limit, jiffies); i++)
 		{
 			val = inw(REG(PSS_STATUS));
 			if (val & 0x4000)
@@ -400,7 +398,7 @@ static int pss_download_boot(pss_confdata * devc, unsigned char *block, int size
 }
 
 /* Mixer */
-static void set_master_volume(pss_confdata *devc, int left, int right)
+static void set_master_volume(struct pss_confdata *devc, int left, int right)
 {
 	static unsigned char log_scale[101] =  {
 		0xdb, 0xe0, 0xe3, 0xe5, 0xe7, 0xe9, 0xea, 0xeb, 0xec, 0xed, 0xed, 0xee,
@@ -419,7 +417,7 @@ static void set_master_volume(pss_confdata *devc, int left, int right)
 	pss_write(devc, log_scale[right] | 0x0100);
 }
 
-static void set_synth_volume(pss_confdata *devc, int volume)
+static void set_synth_volume(struct pss_confdata *devc, int volume)
 {
 	int vol = ((0x8000*volume)/100L);
 	pss_write(devc, 0x0080);
@@ -428,21 +426,21 @@ static void set_synth_volume(pss_confdata *devc, int volume)
 	pss_write(devc, vol);
 }
 
-static void set_bass(pss_confdata *devc, int level)
+static void set_bass(struct pss_confdata *devc, int level)
 {
 	int vol = (int)(((0xfd - 0xf0) * level)/100L) + 0xf0;
 	pss_write(devc, 0x0010);
 	pss_write(devc, vol | 0x0200);
 };
 
-static void set_treble(pss_confdata *devc, int level)
+static void set_treble(struct pss_confdata *devc, int level)
 {	
 	int vol = (((0xfd - 0xf0) * level)/100L) + 0xf0;
 	pss_write(devc, 0x0010);
 	pss_write(devc, vol | 0x0300);
 };
 
-static void pss_mixer_reset(pss_confdata *devc)
+static void pss_mixer_reset(struct pss_confdata *devc)
 {
 	set_master_volume(devc, 33, 33);
 	set_bass(devc, 50);
@@ -460,10 +458,9 @@ static void pss_mixer_reset(pss_confdata *devc)
 	}
 }
 
-static int set_volume_mono(unsigned __user *p, int *aleft)
+static int set_volume_mono(unsigned __user *p, unsigned int *aleft)
 {
-	int left;
-	unsigned volume;
+	unsigned int left, volume;
 	if (get_user(volume, p))
 		return -EFAULT;
 	
@@ -474,10 +471,11 @@ static int set_volume_mono(unsigned __user *p, int *aleft)
 	return 0;
 }
 
-static int set_volume_stereo(unsigned __user *p, int *aleft, int *aright)
+static int set_volume_stereo(unsigned __user *p,
+			     unsigned int *aleft,
+			     unsigned int *aright)
 {
-	int left, right;
-	unsigned volume;
+	unsigned int left, right, volume;
 	if (get_user(volume, p))
 		return -EFAULT;
 
@@ -502,7 +500,8 @@ static int ret_vol_stereo(int left, int right)
 	return ((right << 8) | left);
 }
 
-static int call_ad_mixer(pss_confdata *devc,unsigned int cmd, void __user *arg)
+static int call_ad_mixer(struct pss_confdata *devc, unsigned int cmd,
+			 void __user *arg)
 {
 	if (devc->ad_mixer_dev != NO_WSS_MIXER) 
 		return mixer_devs[devc->ad_mixer_dev]->ioctl(devc->ad_mixer_dev, cmd, arg);
@@ -512,7 +511,7 @@ static int call_ad_mixer(pss_confdata *devc,unsigned int cmd, void __user *arg)
 
 static int pss_mixer_ioctl (int dev, unsigned int cmd, void __user *arg)
 {
-	pss_confdata *devc = mixer_devs[dev]->devc;
+	struct pss_confdata *devc = mixer_devs[dev]->devc;
 	int cmdf = cmd & 0xff;
 	
 	if ((cmdf != SOUND_MIXER_VOLUME) && (cmdf != SOUND_MIXER_BASS) &&
@@ -674,20 +673,13 @@ static void configure_nonsound_components(void)
 
 	/* Configure CDROM port */
 
-	if(pss_cdrom_port == -1)	/* If cdrom port enablation wasn't requested */
-	{
+	if (pss_cdrom_port == -1) {	/* If cdrom port enablation wasn't requested */
 		printk(KERN_INFO "PSS: CDROM port not enabled.\n");
-	}
-	else if(check_region(pss_cdrom_port, 2))
-	{
+	} else if (!request_region(pss_cdrom_port, 2, "PSS CDROM")) {
+		pss_cdrom_port = -1;
 		printk(KERN_ERR "PSS: CDROM I/O port conflict.\n");
-	}
-	else if(!set_io_base(devc, CONF_CDROM, pss_cdrom_port))
-	{
-		printk(KERN_ERR "PSS: CDROM I/O port could not be set.\n");
-	}
-	else					/* CDROM port successfully configured */
-	{
+	} else {
+		set_io_base(devc, CONF_CDROM, pss_cdrom_port);
 		printk(KERN_INFO "PSS: CDROM I/O port set to 0x%x.\n", pss_cdrom_port);
 	}
 }
@@ -714,7 +706,7 @@ static int __init attach_pss(struct address_info *hw_config)
 	 
 	disable_all_emulations();
 
-#if YOU_REALLY_WANT_TO_ALLOCATE_THESE_RESOURCES
+#ifdef YOU_REALLY_WANT_TO_ALLOCATE_THESE_RESOURCES
 	if (sound_alloc_dma(hw_config->dma, "PSS"))
 	{
 		printk("pss.c: Can't allocate DMA channel.\n");
@@ -759,10 +751,7 @@ static int __init probe_pss_mpu(struct address_info *hw_config)
 		printk(KERN_ERR "PSS: MPU I/O port conflict\n");
 		return 0;
 	}
-	if (!set_io_base(devc, CONF_MIDI, hw_config->io_base)) {
-		printk(KERN_ERR "PSS: MIDI base could not be set.\n");
-		goto fail;
-	}
+	set_io_base(devc, CONF_MIDI, hw_config->io_base);
 	if (!set_irq(devc, CONF_MIDI, hw_config->irq)) {
 		printk(KERN_ERR "PSS: MIDI IRQ allocation error.\n");
 		goto fail;
@@ -873,7 +862,7 @@ static int pss_coproc_ioctl(void *dev_info, unsigned int cmd, void __user *arg, 
 			return 0;
 
 		case SNDCTL_COPR_LOAD:
-			buf = (copr_buffer *) vmalloc(sizeof(copr_buffer));
+			buf = vmalloc(sizeof(copr_buffer));
 			if (buf == NULL)
 				return -ENOSPC;
 			if (copy_from_user(buf, arg, sizeof(copr_buffer))) {
@@ -885,7 +874,7 @@ static int pss_coproc_ioctl(void *dev_info, unsigned int cmd, void __user *arg, 
 			return err;
 		
 		case SNDCTL_COPR_SENDMSG:
-			mbuf = (copr_msg *)vmalloc(sizeof(copr_msg));
+			mbuf = vmalloc(sizeof(copr_msg));
 			if (mbuf == NULL)
 				return -ENOSPC;
 			if (copy_from_user(mbuf, arg, sizeof(copr_msg))) {
@@ -909,7 +898,7 @@ static int pss_coproc_ioctl(void *dev_info, unsigned int cmd, void __user *arg, 
 
 		case SNDCTL_COPR_RCVMSG:
 			err = 0;
-			mbuf = (copr_msg *)vmalloc(sizeof(copr_msg));
+			mbuf = vmalloc(sizeof(copr_msg));
 			if (mbuf == NULL)
 				return -ENOSPC;
 			data = (unsigned short *)mbuf->data;
@@ -1058,10 +1047,7 @@ static int __init probe_pss_mss(struct address_info *hw_config)
 		release_region(hw_config->io_base, 4);
 		return 0;
 	}
-	if (!set_io_base(devc, CONF_WSS, hw_config->io_base)) {
-		printk("PSS: WSS base not settable.\n");
-		goto fail;
-	}
+	set_io_base(devc, CONF_WSS, hw_config->io_base);
 	if (!set_irq(devc, CONF_WSS, hw_config->irq)) {
 		printk("PSS: WSS IRQ allocation error.\n");
 		goto fail;
@@ -1149,8 +1135,8 @@ static int mss_irq __initdata	= -1;
 static int mss_dma __initdata	= -1;
 static int mpu_io __initdata	= -1;
 static int mpu_irq __initdata	= -1;
-static int pss_no_sound = 0;	/* Just configure non-sound components */
-static int pss_keep_settings  = 1;	/* Keep hardware settings at module exit */
+static bool pss_no_sound = 0;	/* Just configure non-sound components */
+static bool pss_keep_settings  = 1;	/* Keep hardware settings at module exit */
 static char *pss_firmware = "/etc/sound/pss_synth";
 
 module_param(pss_io, int, 0);
@@ -1242,14 +1228,15 @@ static void __exit cleanup_pss(void)
 {
 	if(!pss_no_sound)
 	{
-		if(fw_load && pss_synth)
+		if (fw_load)
 			vfree(pss_synth);
 		if(pssmss)
 			unload_pss_mss(&cfg2);
 		if(pssmpu)
 			unload_pss_mpu(&cfg_mpu);
 		unload_pss(&cfg);
-	}
+	} else if (pss_cdrom_port != -1)
+		release_region(pss_cdrom_port, 2);
 
 	if(!pss_keep_settings)	/* Keep hardware settings if asked */
 	{

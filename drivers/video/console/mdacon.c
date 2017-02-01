@@ -27,15 +27,12 @@
  */
 
 #include <linux/types.h>
-#include <linux/sched.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/tty.h>
 #include <linux/console.h>
 #include <linux/string.h>
 #include <linux/kd.h>
-#include <linux/slab.h>
 #include <linux/vt_kern.h>
 #include <linux/vt_buffer.h>
 #include <linux/selection.h>
@@ -73,13 +70,15 @@ static char *mda_type_name;
 
 /* console information */
 
-static int	mda_first_vc = 1;
+static int	mda_first_vc = 13;
 static int	mda_last_vc  = 16;
 
 static struct vc_data	*mda_display_fg = NULL;
 
 module_param(mda_first_vc, int, 0);
+MODULE_PARM_DESC(mda_first_vc, "First virtual console. Default: 13");
 module_param(mda_last_vc, int, 0);
+MODULE_PARM_DESC(mda_last_vc, "Last virtual console. Default: 16");
 
 /* MDA register values
  */
@@ -198,7 +197,7 @@ static int __init mdacon_setup(char *str)
 __setup("mdacon=", mdacon_setup);
 #endif
 
-static int __init mda_detect(void)
+static int mda_detect(void)
 {
 	int count=0;
 	u16 *p, p_save;
@@ -283,7 +282,7 @@ static int __init mda_detect(void)
 	return 1;
 }
 
-static void __init mda_initialize(void)
+static void mda_initialize(void)
 {
 	write_mda_b(97, 0x00);		/* horizontal total */
 	write_mda_b(80, 0x01);		/* horizontal displayed */
@@ -308,13 +307,13 @@ static void __init mda_initialize(void)
 	outb_p(0x00, mda_gfx_port);
 }
 
-static const char __init *mdacon_startup(void)
+static const char *mdacon_startup(void)
 {
 	mda_num_columns = 80;
 	mda_num_lines   = 25;
 
-	mda_vram_base = VGA_MAP_MEM(0xb0000);
 	mda_vram_len  = 0x01000;
+	mda_vram_base = VGA_MAP_MEM(0xb0000, mda_vram_len);
 
 	mda_index_port  = 0x3b4;
 	mda_value_port  = 0x3b5;
@@ -386,7 +385,7 @@ static inline u16 mda_convert_attr(u16 ch)
 }
 
 static u8 mdacon_build_attr(struct vc_data *c, u8 color, u8 intensity, 
-			    u8 blink, u8 underline, u8 reverse)
+			    u8 blink, u8 underline, u8 reverse, u8 italic)
 {
 	/* The attribute is just a bit vector:
 	 *
@@ -399,6 +398,7 @@ static u8 mdacon_build_attr(struct vc_data *c, u8 color, u8 intensity,
 	return (intensity & 3) |
 		((underline & 1) << 2) |
 		((reverse   & 1) << 3) |
+		(!!italic << 4) |
 		((blink     & 1) << 7);
 }
 
@@ -444,46 +444,9 @@ static void mdacon_clear(struct vc_data *c, int y, int x,
 	}
 }
                         
-static void mdacon_bmove(struct vc_data *c, int sy, int sx, 
-			 int dy, int dx, int height, int width)
-{
-	u16 *src, *dest;
-
-	if (width <= 0 || height <= 0)
-		return;
-		
-	if (sx==0 && dx==0 && width==mda_num_columns) {
-		scr_memmovew(MDA_ADDR(0,dy), MDA_ADDR(0,sy), height*width*2);
-
-	} else if (dy < sy || (dy == sy && dx < sx)) {
-		src  = MDA_ADDR(sx, sy);
-		dest = MDA_ADDR(dx, dy);
-
-		for (; height > 0; height--) {
-			scr_memmovew(dest, src, width*2);
-			src  += mda_num_columns;
-			dest += mda_num_columns;
-		}
-	} else {
-		src  = MDA_ADDR(sx, sy+height-1);
-		dest = MDA_ADDR(dx, dy+height-1);
-
-		for (; height > 0; height--) {
-			scr_memmovew(dest, src, width*2);
-			src  -= mda_num_columns;
-			dest -= mda_num_columns;
-		}
-	}
-}
-
 static int mdacon_switch(struct vc_data *c)
 {
 	return 1;	/* redrawing needed */
-}
-
-static int mdacon_set_palette(struct vc_data *c, unsigned char *table)
-{
-	return -EINVAL;
 }
 
 static int mdacon_blank(struct vc_data *c, int blank, int mode_switch)
@@ -503,11 +466,6 @@ static int mdacon_blank(struct vc_data *c, int blank, int mode_switch)
 				mda_mode_port);
 		return 0;
 	}
-}
-
-static int mdacon_scrolldelta(struct vc_data *c, int lines)
-{
-	return 0;
 }
 
 static void mdacon_cursor(struct vc_data *c, int mode)
@@ -574,21 +532,22 @@ static const struct consw mda_con = {
 	.con_putcs =		mdacon_putcs,
 	.con_cursor =		mdacon_cursor,
 	.con_scroll =		mdacon_scroll,
-	.con_bmove =		mdacon_bmove,
 	.con_switch =		mdacon_switch,
 	.con_blank =		mdacon_blank,
-	.con_set_palette =	mdacon_set_palette,
-	.con_scrolldelta =	mdacon_scrolldelta,
 	.con_build_attr =	mdacon_build_attr,
 	.con_invert_region =	mdacon_invert_region,
 };
 
 int __init mda_console_init(void)
 {
+	int err;
+
 	if (mda_first_vc > mda_last_vc)
 		return 1;
-
-	return take_over_console(&mda_con, mda_first_vc-1, mda_last_vc-1, 0);
+	console_lock();
+	err = do_take_over_console(&mda_con, mda_first_vc-1, mda_last_vc-1, 0);
+	console_unlock();
+	return err;
 }
 
 static void __exit mda_console_exit(void)

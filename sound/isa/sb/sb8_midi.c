@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) by Jaroslav Kysela <perex@suse.cz>
+ *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
  *  Routines for control of SoundBlaster cards - MIDI interface
  *
  *   This program is free software; you can redistribute it and/or modify
@@ -26,26 +26,27 @@
  *   Added full duplex UART mode for DSP version 2.0 and later.
  */
 
-#include <sound/driver.h>
-#include <asm/io.h>
+#include <linux/io.h>
 #include <linux/time.h>
 #include <sound/core.h>
 #include <sound/sb.h>
 
-/*
 
- */
-
-irqreturn_t snd_sb8dsp_midi_interrupt(sb_t * chip)
+irqreturn_t snd_sb8dsp_midi_interrupt(struct snd_sb *chip)
 {
-	snd_rawmidi_t *rmidi;
+	struct snd_rawmidi *rmidi;
 	int max = 64;
 	char byte;
 
-	if (chip == NULL || (rmidi = chip->rmidi) == NULL) {
+	if (!chip)
+		return IRQ_NONE;
+	
+	rmidi = chip->rmidi;
+	if (!rmidi) {
 		inb(SBP(chip, DATA_AVAIL));	/* ack interrupt */
 		return IRQ_NONE;
 	}
+
 	spin_lock(&chip->midi_input_lock);
 	while (max-- > 0) {
 		if (inb(SBP(chip, DATA_AVAIL)) & 0x80) {
@@ -59,14 +60,10 @@ irqreturn_t snd_sb8dsp_midi_interrupt(sb_t * chip)
 	return IRQ_HANDLED;
 }
 
-/*
-
- */
-
-static int snd_sb8dsp_midi_input_open(snd_rawmidi_substream_t * substream)
+static int snd_sb8dsp_midi_input_open(struct snd_rawmidi_substream *substream)
 {
 	unsigned long flags;
-	sb_t *chip;
+	struct snd_sb *chip;
 	unsigned int valid_open_flags;
 
 	chip = substream->rmidi->private_data;
@@ -90,10 +87,10 @@ static int snd_sb8dsp_midi_input_open(snd_rawmidi_substream_t * substream)
 	return 0;
 }
 
-static int snd_sb8dsp_midi_output_open(snd_rawmidi_substream_t * substream)
+static int snd_sb8dsp_midi_output_open(struct snd_rawmidi_substream *substream)
 {
 	unsigned long flags;
-	sb_t *chip;
+	struct snd_sb *chip;
 	unsigned int valid_open_flags;
 
 	chip = substream->rmidi->private_data;
@@ -117,10 +114,10 @@ static int snd_sb8dsp_midi_output_open(snd_rawmidi_substream_t * substream)
 	return 0;
 }
 
-static int snd_sb8dsp_midi_input_close(snd_rawmidi_substream_t * substream)
+static int snd_sb8dsp_midi_input_close(struct snd_rawmidi_substream *substream)
 {
 	unsigned long flags;
-	sb_t *chip;
+	struct snd_sb *chip;
 
 	chip = substream->rmidi->private_data;
 	spin_lock_irqsave(&chip->open_lock, flags);
@@ -135,10 +132,10 @@ static int snd_sb8dsp_midi_input_close(snd_rawmidi_substream_t * substream)
 	return 0;
 }
 
-static int snd_sb8dsp_midi_output_close(snd_rawmidi_substream_t * substream)
+static int snd_sb8dsp_midi_output_close(struct snd_rawmidi_substream *substream)
 {
 	unsigned long flags;
-	sb_t *chip;
+	struct snd_sb *chip;
 
 	chip = substream->rmidi->private_data;
 	spin_lock_irqsave(&chip->open_lock, flags);
@@ -153,10 +150,10 @@ static int snd_sb8dsp_midi_output_close(snd_rawmidi_substream_t * substream)
 	return 0;
 }
 
-static void snd_sb8dsp_midi_input_trigger(snd_rawmidi_substream_t * substream, int up)
+static void snd_sb8dsp_midi_input_trigger(struct snd_rawmidi_substream *substream, int up)
 {
 	unsigned long flags;
-	sb_t *chip;
+	struct snd_sb *chip;
 
 	chip = substream->rmidi->private_data;
 	spin_lock_irqsave(&chip->open_lock, flags);
@@ -176,10 +173,10 @@ static void snd_sb8dsp_midi_input_trigger(snd_rawmidi_substream_t * substream, i
 	spin_unlock_irqrestore(&chip->open_lock, flags);
 }
 
-static void snd_sb8dsp_midi_output_write(snd_rawmidi_substream_t * substream)
+static void snd_sb8dsp_midi_output_write(struct snd_rawmidi_substream *substream)
 {
 	unsigned long flags;
-	sb_t *chip;
+	struct snd_sb *chip;
 	char byte;
 	int max = 32;
 
@@ -214,31 +211,29 @@ static void snd_sb8dsp_midi_output_write(snd_rawmidi_substream_t * substream)
 
 static void snd_sb8dsp_midi_output_timer(unsigned long data)
 {
-	snd_rawmidi_substream_t * substream = (snd_rawmidi_substream_t *) data;
-	sb_t * chip = substream->rmidi->private_data;
+	struct snd_rawmidi_substream *substream = (struct snd_rawmidi_substream *) data;
+	struct snd_sb * chip = substream->rmidi->private_data;
 	unsigned long flags;
 
 	spin_lock_irqsave(&chip->open_lock, flags);
-	chip->midi_timer.expires = 1 + jiffies;
-	add_timer(&chip->midi_timer);
+	mod_timer(&chip->midi_timer, 1 + jiffies);
 	spin_unlock_irqrestore(&chip->open_lock, flags);	
 	snd_sb8dsp_midi_output_write(substream);
 }
 
-static void snd_sb8dsp_midi_output_trigger(snd_rawmidi_substream_t * substream, int up)
+static void snd_sb8dsp_midi_output_trigger(struct snd_rawmidi_substream *substream, int up)
 {
 	unsigned long flags;
-	sb_t *chip;
+	struct snd_sb *chip;
 
 	chip = substream->rmidi->private_data;
 	spin_lock_irqsave(&chip->open_lock, flags);
 	if (up) {
 		if (!(chip->open & SB_OPEN_MIDI_OUTPUT_TRIGGER)) {
-			init_timer(&chip->midi_timer);
-			chip->midi_timer.function = snd_sb8dsp_midi_output_timer;
-			chip->midi_timer.data = (unsigned long) substream;
-			chip->midi_timer.expires = 1 + jiffies;
-			add_timer(&chip->midi_timer);
+			setup_timer(&chip->midi_timer,
+				    snd_sb8dsp_midi_output_timer,
+				    (unsigned long) substream);
+			mod_timer(&chip->midi_timer, 1 + jiffies);
 			chip->open |= SB_OPEN_MIDI_OUTPUT_TRIGGER;
 		}
 	} else {
@@ -252,31 +247,25 @@ static void snd_sb8dsp_midi_output_trigger(snd_rawmidi_substream_t * substream, 
 		snd_sb8dsp_midi_output_write(substream);
 }
 
-/*
-
- */
-
-static snd_rawmidi_ops_t snd_sb8dsp_midi_output =
+static struct snd_rawmidi_ops snd_sb8dsp_midi_output =
 {
 	.open =		snd_sb8dsp_midi_output_open,
 	.close =	snd_sb8dsp_midi_output_close,
 	.trigger =	snd_sb8dsp_midi_output_trigger,
 };
 
-static snd_rawmidi_ops_t snd_sb8dsp_midi_input =
+static struct snd_rawmidi_ops snd_sb8dsp_midi_input =
 {
 	.open =		snd_sb8dsp_midi_input_open,
 	.close =	snd_sb8dsp_midi_input_close,
 	.trigger =	snd_sb8dsp_midi_input_trigger,
 };
 
-int snd_sb8dsp_midi(sb_t *chip, int device, snd_rawmidi_t ** rrawmidi)
+int snd_sb8dsp_midi(struct snd_sb *chip, int device)
 {
-	snd_rawmidi_t *rmidi;
+	struct snd_rawmidi *rmidi;
 	int err;
 
-	if (rrawmidi)
-		*rrawmidi = NULL;
 	if ((err = snd_rawmidi_new(chip->card, "SB8 MIDI", device, 1, 1, &rmidi)) < 0)
 		return err;
 	strcpy(rmidi->name, "SB8 MIDI");
@@ -287,7 +276,5 @@ int snd_sb8dsp_midi(sb_t *chip, int device, snd_rawmidi_t ** rrawmidi)
 		rmidi->info_flags |= SNDRV_RAWMIDI_INFO_DUPLEX;
 	rmidi->private_data = chip;
 	chip->rmidi = rmidi;
-	if (rrawmidi)
-		*rrawmidi = rmidi;
 	return 0;
 }

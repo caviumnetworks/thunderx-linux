@@ -24,7 +24,7 @@
  *
  *  This driver programs the PCX-U/PCX-W performance counters
  *  on the PA-RISC 2.0 chips.  The driver keeps all images now
- *  internally to the kernel to hopefully eliminate the possiblity
+ *  internally to the kernel to hopefully eliminate the possibility
  *  of a bad image halting the CPU.  Also, there are different
  *  images for the PCX-W and later chips vs the PCX-U chips.
  *
@@ -42,6 +42,7 @@
  *  on every box. 
  */
 
+#include <linux/capability.h>
 #include <linux/init.h>
 #include <linux/proc_fs.h>
 #include <linux/miscdevice.h>
@@ -66,21 +67,21 @@ struct rdr_tbl_ent {
 	uint8_t		write_control;
 };
 
-static int perf_processor_interface = UNKNOWN_INTF;
-static int perf_enabled = 0;
+static int perf_processor_interface __read_mostly = UNKNOWN_INTF;
+static int perf_enabled __read_mostly;
 static spinlock_t perf_lock;
-struct parisc_device *cpu_device = NULL;
+struct parisc_device *cpu_device __read_mostly;
 
 /* RDRs to write for PCX-W */
-static int perf_rdrs_W[] = 
+static const int perf_rdrs_W[] =
 	{ 0, 1, 4, 5, 6, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, -1 };
 
 /* RDRs to write for PCX-U */
-static int perf_rdrs_U[] =
+static const int perf_rdrs_U[] =
 	{ 0, 1, 4, 5, 6, 7, 16, 17, 18, 20, 21, 22, 23, 24, 25, -1 };
 
 /* RDR register descriptions for PCX-W */
-static struct rdr_tbl_ent perf_rdr_tbl_W[] = {
+static const struct rdr_tbl_ent perf_rdr_tbl_W[] = {
 	{ 19,	1,	8 },   /* RDR 0 */
 	{ 16,	1,	16 },  /* RDR 1 */
 	{ 72,	2,	0 },   /* RDR 2 */
@@ -116,7 +117,7 @@ static struct rdr_tbl_ent perf_rdr_tbl_W[] = {
 };
 
 /* RDR register descriptions for PCX-U */
-static struct rdr_tbl_ent perf_rdr_tbl_U[] = {
+static const struct rdr_tbl_ent perf_rdr_tbl_U[] = {
 	{ 19,	1,	8 },              /* RDR 0 */
 	{ 32,	1,	16 },             /* RDR 1 */
 	{ 20,	1,	0 },              /* RDR 2 */
@@ -155,7 +156,7 @@ static struct rdr_tbl_ent perf_rdr_tbl_U[] = {
  * A non-zero write_control in the above tables is a byte offset into
  * this array.
  */
-static uint64_t perf_bitmasks[] = {
+static const uint64_t perf_bitmasks[] = {
 	0x0000000000000000ul,     /* first dbl word must be zero */
 	0xfdffe00000000000ul,     /* RDR0 bitmask */
 	0x003f000000000000ul,     /* RDR1 bitmask */
@@ -170,9 +171,9 @@ static uint64_t perf_bitmasks[] = {
 
 /*
  * Write control bitmasks for Pa-8700 processor given
- * somethings have changed slightly.
+ * some things have changed slightly.
  */
-static uint64_t perf_bitmasks_piranha[] = {
+static const uint64_t perf_bitmasks_piranha[] = {
 	0x0000000000000000ul,     /* first dbl word must be zero */
 	0xfdffe00000000000ul,     /* RDR0 bitmask */
 	0x003f000000000000ul,     /* RDR1 bitmask */
@@ -185,7 +186,7 @@ static uint64_t perf_bitmasks_piranha[] = {
 	0xfffc000000000000ul
 };
 
-static uint64_t *bitmask_array;   /* array of bitmasks to use */
+static const uint64_t *bitmask_array;   /* array of bitmasks to use */
 
 /******************************************************************************
  * Function Prototypes
@@ -196,11 +197,10 @@ static int perf_open(struct inode *inode, struct file *file);
 static ssize_t perf_read(struct file *file, char __user *buf, size_t cnt, loff_t *ppos);
 static ssize_t perf_write(struct file *file, const char __user *buf, size_t count, 
 	loff_t *ppos);
-static int perf_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
-	unsigned long arg);
+static long perf_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 static void perf_start_counters(void);
 static int perf_stop_counters(uint32_t *raddr);
-static struct rdr_tbl_ent * perf_rdr_get_entry(uint32_t rdr_num);
+static const struct rdr_tbl_ent * perf_rdr_get_entry(uint32_t rdr_num);
 static int perf_rdr_read_ubuf(uint32_t	rdr_num, uint64_t *buffer);
 static int perf_rdr_clear(uint32_t rdr_num);
 static int perf_write_image(uint64_t *memaddr);
@@ -438,48 +438,53 @@ static void perf_patch_images(void)
  * must be running on the processor that you wish to change.
  */
 
-static int perf_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
-	unsigned long arg)
+static long perf_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	long error_start;
-	uint32_t raddr[4];	
+	uint32_t raddr[4];
+	int error = 0;
 
 	switch (cmd) {
 
 	    case PA_PERF_ON:
 			/* Start the counters */
 			perf_start_counters();
-			return 0;
+			break;
 
 	    case PA_PERF_OFF:
 			error_start = perf_stop_counters(raddr);
 			if (error_start != 0) {
 				printk(KERN_ERR "perf_off: perf_stop_counters = %ld\n", error_start);
-				return -EFAULT;	
+				error = -EFAULT;
+				break;
 			}
 
 			/* copy out the Counters */
 			if (copy_to_user((void __user *)arg, raddr, 
 					sizeof (raddr)) != 0) {
-				return -EFAULT;
+				error =  -EFAULT;
+				break;
 			}
-			return 0;
+			break;
 
 	    case PA_PERF_VERSION:
   	  		/* Return the version # */
-			return put_user(PERF_VERSION, (int *)arg);
+			error = put_user(PERF_VERSION, (int *)arg);
+			break;
 
 	    default:
-  	 		break;
+  	 		error = -ENOTTY;
 	}
-	return -ENOTTY;
+
+	return error;
 }
 
-static struct file_operations perf_fops = {
+static const struct file_operations perf_fops = {
 	.llseek = no_llseek,
 	.read = perf_read,
 	.write = perf_write,
-	.ioctl = perf_ioctl,
+	.unlocked_ioctl = perf_ioctl,
+	.compat_ioctl = perf_ioctl,
 	.open = perf_open,
 	.release = perf_release
 };
@@ -506,10 +511,12 @@ static int __init perf_init(void)
 	} else if (boot_cpu_data.cpu_type == pcxw ||
 		 boot_cpu_data.cpu_type == pcxw_ ||
 		 boot_cpu_data.cpu_type == pcxw2 ||
-		 boot_cpu_data.cpu_type == mako) {
+		 boot_cpu_data.cpu_type == mako ||
+		 boot_cpu_data.cpu_type == mako2) {
 		perf_processor_interface = CUDA_INTF;
 		if (boot_cpu_data.cpu_type == pcxw2 ||
-		    boot_cpu_data.cpu_type == mako) 
+		    boot_cpu_data.cpu_type == mako ||
+		    boot_cpu_data.cpu_type == mako2)
 			bitmask_array = perf_bitmasks_piranha;
 	} else {
 		perf_processor_interface = UNKNOWN_INTF;
@@ -530,12 +537,13 @@ static int __init perf_init(void)
 	spin_lock_init(&perf_lock);
 
 	/* TODO: this only lets us access the first cpu.. what to do for SMP? */
-	cpu_device = cpu_data[0].dev;
+	cpu_device = per_cpu(cpu_data, 0).dev;
 	printk("Performance monitoring counters enabled for %s\n",
-		cpu_data[0].dev->name);
+		per_cpu(cpu_data, 0).dev->name);
 
 	return 0;
 }
+device_initcall(perf_init);
 
 /*
  * perf_start_counters(void)
@@ -569,27 +577,27 @@ static int perf_stop_counters(uint32_t *raddr)
 		if (!perf_rdr_read_ubuf(16, userbuf))
 			return -13;
 
-		/* Counter0 is bits 1398 thru 1429 */
+		/* Counter0 is bits 1398 to 1429 */
 		tmp64 =  (userbuf[21] << 22) & 0x00000000ffc00000;
 		tmp64 |= (userbuf[22] >> 42) & 0x00000000003fffff;
 		/* OR sticky0 (bit 1430) to counter0 bit 32 */
 		tmp64 |= (userbuf[22] >> 10) & 0x0000000080000000;
 		raddr[0] = (uint32_t)tmp64;
 
-		/* Counter1 is bits 1431 thru 1462 */
+		/* Counter1 is bits 1431 to 1462 */
 		tmp64 =  (userbuf[22] >> 9) & 0x00000000ffffffff;
 		/* OR sticky1 (bit 1463) to counter1 bit 32 */
 		tmp64 |= (userbuf[22] << 23) & 0x0000000080000000;
 		raddr[1] = (uint32_t)tmp64;
 
-		/* Counter2 is bits 1464 thru 1495 */
+		/* Counter2 is bits 1464 to 1495 */
 		tmp64 =  (userbuf[22] << 24) & 0x00000000ff000000;
 		tmp64 |= (userbuf[23] >> 40) & 0x0000000000ffffff;
 		/* OR sticky2 (bit 1496) to counter2 bit 32 */
 		tmp64 |= (userbuf[23] >> 8) & 0x0000000080000000;
 		raddr[2] = (uint32_t)tmp64;
 		
-		/* Counter3 is bits 1497 thru 1528 */
+		/* Counter3 is bits 1497 to 1528 */
 		tmp64 =  (userbuf[23] >> 7) & 0x00000000ffffffff;
 		/* OR sticky3 (bit 1529) to counter3 bit 32 */
 		tmp64 |= (userbuf[23] << 25) & 0x0000000080000000;
@@ -611,7 +619,7 @@ static int perf_stop_counters(uint32_t *raddr)
 		userbuf[23] = 0;
 
 		/* 
-		 * Write back the zero'ed bytes + the image given
+		 * Write back the zeroed bytes + the image given
 		 * the read was destructive.
 		 */
 		perf_rdr_write(16, userbuf);
@@ -647,7 +655,7 @@ static int perf_stop_counters(uint32_t *raddr)
  * Retrieve a pointer to the description of what this
  * RDR contains.
  */
-static struct rdr_tbl_ent * perf_rdr_get_entry(uint32_t rdr_num)
+static const struct rdr_tbl_ent * perf_rdr_get_entry(uint32_t rdr_num)
 {
 	if (perf_processor_interface == ONYX_INTF) {
 		return &perf_rdr_tbl_U[rdr_num];
@@ -665,7 +673,7 @@ static int perf_rdr_read_ubuf(uint32_t	rdr_num, uint64_t *buffer)
 {
 	uint64_t	data, data_mask = 0;
 	uint32_t	width, xbits, i;
-	struct rdr_tbl_ent *tentry;
+	const struct rdr_tbl_ent *tentry;
 
 	tentry = perf_rdr_get_entry(rdr_num);
 	if ((width = tentry->width) == 0)
@@ -713,7 +721,7 @@ static int perf_rdr_read_ubuf(uint32_t	rdr_num, uint64_t *buffer)
  */
 static int perf_rdr_clear(uint32_t	rdr_num)
 {
-	struct rdr_tbl_ent *tentry;
+	const struct rdr_tbl_ent *tentry;
 	int32_t		i;
 
 	tentry = perf_rdr_get_entry(rdr_num);
@@ -745,9 +753,11 @@ static int perf_write_image(uint64_t *memaddr)
 	uint64_t buffer[MAX_RDR_WORDS];
 	uint64_t *bptr;
 	uint32_t dwords;
-	uint32_t *intrigue_rdr;
-	uint64_t *intrigue_bitmask, tmp64, proc_hpa;
-	struct rdr_tbl_ent *tentry;
+	const uint32_t *intrigue_rdr;
+	const uint64_t *intrigue_bitmask;
+	uint64_t tmp64;
+	void __iomem *runway;
+	const struct rdr_tbl_ent *tentry;
 	int i;
 
 	/* Clear out counters */
@@ -798,15 +808,16 @@ static int perf_write_image(uint64_t *memaddr)
 		return -1;
 	}
 
-	proc_hpa = cpu_device->hpa;
+	runway = ioremap_nocache(cpu_device->hpa.start, 4096);
 
 	/* Merge intrigue bits into Runway STATUS 0 */
-	tmp64 = __raw_readq(proc_hpa + RUNWAY_STATUS) & 0xffecfffffffffffful;
-	__raw_writeq(tmp64 | (*memaddr++ & 0x0013000000000000ul), proc_hpa + RUNWAY_STATUS);
+	tmp64 = __raw_readq(runway + RUNWAY_STATUS) & 0xffecfffffffffffful;
+	__raw_writeq(tmp64 | (*memaddr++ & 0x0013000000000000ul), 
+		     runway + RUNWAY_STATUS);
 	
 	/* Write RUNWAY DEBUG registers */
 	for (i = 0; i < 8; i++) {
-		__raw_writeq(*memaddr++, proc_hpa + RUNWAY_DEBUG + i);
+		__raw_writeq(*memaddr++, runway + RUNWAY_DEBUG);
 	}
 
 	return 0; 
@@ -820,7 +831,7 @@ static int perf_write_image(uint64_t *memaddr)
  */
 static void perf_rdr_write(uint32_t rdr_num, uint64_t *buffer)
 {
-	struct rdr_tbl_ent *tentry;
+	const struct rdr_tbl_ent *tentry;
 	int32_t		i;
 
 printk("perf_rdr_write\n");
@@ -837,5 +848,3 @@ printk("perf_rdr_write\n");
 	}
 printk("perf_rdr_write done\n");
 }
-
-module_init(perf_init);

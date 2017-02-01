@@ -14,25 +14,84 @@
  *     of fds to overcome nfds < 16390 descriptors limit (Tigran Aivazian).
  */
 
+#include <linux/kernel.h>
+#include <linux/sched.h>
 #include <linux/syscalls.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/slab.h>
-#include <linux/smp_lock.h>
 #include <linux/poll.h>
 #include <linux/personality.h> /* for STICKY_TIMEOUTS */
 #include <linux/file.h>
+#include <linux/fdtable.h>
 #include <linux/fs.h>
+#include <linux/rcupdate.h>
+#include <linux/hrtimer.h>
+#include <linux/sched/rt.h>
+#include <linux/freezer.h>
+#include <net/busy_poll.h>
+#include <linux/vmalloc.h>
 
 #include <asm/uaccess.h>
 
-#define ROUND_UP(x,y) (((x)+(y)-1)/(y))
-#define DEFAULT_POLLMASK (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM)
 
-struct poll_table_entry {
-	struct file * filp;
-	wait_queue_t wait;
-	wait_queue_head_t * wait_address;
-};
+/*
+ * Estimate expected accuracy in ns from a timeval.
+ *
+ * After quite a bit of churning around, we've settled on
+ * a simple thing of taking 0.1% of the timeout as the
+ * slack, with a cap of 100 msec.
+ * "nice" tasks get a 0.5% slack instead.
+ *
+ * Consider this comment an open invitation to come up with even
+ * better solutions..
+ */
+
+#define MAX_SLACK	(100 * NSEC_PER_MSEC)
+
+static long __estimate_accuracy(struct timespec64 *tv)
+{
+	long slack;
+	int divfactor = 1000;
+
+	if (tv->tv_sec < 0)
+		return 0;
+
+	if (task_nice(current) > 0)
+		divfactor = divfactor / 5;
+
+	if (tv->tv_sec > MAX_SLACK / (NSEC_PER_SEC/divfactor))
+		return MAX_SLACK;
+
+	slack = tv->tv_nsec / divfactor;
+	slack += tv->tv_sec * (NSEC_PER_SEC/divfactor);
+
+	if (slack > MAX_SLACK)
+		return MAX_SLACK;
+
+	return slack;
+}
+
+u64 select_estimate_accuracy(struct timespec64 *tv)
+{
+	u64 ret;
+	struct timespec64 now;
+
+	/*
+	 * Realtime tasks get a slack of 0 for obvious reasons.
+	 */
+
+	if (rt_task(current))
+		return 0;
+
+	ktime_get_ts64(&now);
+	now = timespec64_sub(*tv, now);
+	ret = __estimate_accuracy(&now);
+	if (ret < current->timer_slack_ns)
+		return current->timer_slack_ns;
+	return ret;
+}
+
+
 
 struct poll_table_page {
 	struct poll_table_page * next;
@@ -55,20 +114,32 @@ struct poll_table_page {
  * as all select/poll functions have to call it to add an entry to the
  * poll table.
  */
-void __pollwait(struct file *filp, wait_queue_head_t *wait_address, poll_table *p);
+static void __pollwait(struct file *filp, wait_queue_head_t *wait_address,
+		       poll_table *p);
 
 void poll_initwait(struct poll_wqueues *pwq)
 {
 	init_poll_funcptr(&pwq->pt, __pollwait);
+	pwq->polling_task = current;
+	pwq->triggered = 0;
 	pwq->error = 0;
 	pwq->table = NULL;
+	pwq->inline_index = 0;
 }
-
 EXPORT_SYMBOL(poll_initwait);
+
+static void free_poll_entry(struct poll_table_entry *entry)
+{
+	remove_wait_queue(entry->wait_address, &entry->wait);
+	fput(entry->filp);
+}
 
 void poll_freewait(struct poll_wqueues *pwq)
 {
 	struct poll_table_page * p = pwq->table;
+	int i;
+	for (i = 0; i < pwq->inline_index; i++)
+		free_poll_entry(pwq->inline_entries + i);
 	while (p) {
 		struct poll_table_entry * entry;
 		struct poll_table_page *old;
@@ -76,21 +147,21 @@ void poll_freewait(struct poll_wqueues *pwq)
 		entry = p->entry;
 		do {
 			entry--;
-			remove_wait_queue(entry->wait_address,&entry->wait);
-			fput(entry->filp);
+			free_poll_entry(entry);
 		} while (entry > p->entries);
 		old = p;
 		p = p->next;
 		free_page((unsigned long) old);
 	}
 }
-
 EXPORT_SYMBOL(poll_freewait);
 
-void __pollwait(struct file *filp, wait_queue_head_t *wait_address, poll_table *_p)
+static struct poll_table_entry *poll_get_entry(struct poll_wqueues *p)
 {
-	struct poll_wqueues *p = container_of(_p, struct poll_wqueues, pt);
 	struct poll_table_page *table = p->table;
+
+	if (p->inline_index < N_INLINE_POLL_ENTRIES)
+		return p->inline_entries + p->inline_index++;
 
 	if (!table || POLL_TABLE_FULL(table)) {
 		struct poll_table_page *new_table;
@@ -98,8 +169,7 @@ void __pollwait(struct file *filp, wait_queue_head_t *wait_address, poll_table *
 		new_table = (struct poll_table_page *) __get_free_page(GFP_KERNEL);
 		if (!new_table) {
 			p->error = -ENOMEM;
-			__set_current_state(TASK_RUNNING);
-			return;
+			return NULL;
 		}
 		new_table->entry = new_table->entries;
 		new_table->next = table;
@@ -107,16 +177,165 @@ void __pollwait(struct file *filp, wait_queue_head_t *wait_address, poll_table *
 		table = new_table;
 	}
 
-	/* Add a new entry */
-	{
-		struct poll_table_entry * entry = table->entry;
-		table->entry = entry+1;
-	 	get_file(filp);
-	 	entry->filp = filp;
-		entry->wait_address = wait_address;
-		init_waitqueue_entry(&entry->wait, current);
-		add_wait_queue(wait_address,&entry->wait);
+	return table->entry++;
+}
+
+static int __pollwake(wait_queue_t *wait, unsigned mode, int sync, void *key)
+{
+	struct poll_wqueues *pwq = wait->private;
+	DECLARE_WAITQUEUE(dummy_wait, pwq->polling_task);
+
+	/*
+	 * Although this function is called under waitqueue lock, LOCK
+	 * doesn't imply write barrier and the users expect write
+	 * barrier semantics on wakeup functions.  The following
+	 * smp_wmb() is equivalent to smp_wmb() in try_to_wake_up()
+	 * and is paired with smp_store_mb() in poll_schedule_timeout.
+	 */
+	smp_wmb();
+	pwq->triggered = 1;
+
+	/*
+	 * Perform the default wake up operation using a dummy
+	 * waitqueue.
+	 *
+	 * TODO: This is hacky but there currently is no interface to
+	 * pass in @sync.  @sync is scheduled to be removed and once
+	 * that happens, wake_up_process() can be used directly.
+	 */
+	return default_wake_function(&dummy_wait, mode, sync, key);
+}
+
+static int pollwake(wait_queue_t *wait, unsigned mode, int sync, void *key)
+{
+	struct poll_table_entry *entry;
+
+	entry = container_of(wait, struct poll_table_entry, wait);
+	if (key && !((unsigned long)key & entry->key))
+		return 0;
+	return __pollwake(wait, mode, sync, key);
+}
+
+/* Add a new entry */
+static void __pollwait(struct file *filp, wait_queue_head_t *wait_address,
+				poll_table *p)
+{
+	struct poll_wqueues *pwq = container_of(p, struct poll_wqueues, pt);
+	struct poll_table_entry *entry = poll_get_entry(pwq);
+	if (!entry)
+		return;
+	entry->filp = get_file(filp);
+	entry->wait_address = wait_address;
+	entry->key = p->_key;
+	init_waitqueue_func_entry(&entry->wait, pollwake);
+	entry->wait.private = pwq;
+	add_wait_queue(wait_address, &entry->wait);
+}
+
+int poll_schedule_timeout(struct poll_wqueues *pwq, int state,
+			  ktime_t *expires, unsigned long slack)
+{
+	int rc = -EINTR;
+
+	set_current_state(state);
+	if (!pwq->triggered)
+		rc = schedule_hrtimeout_range(expires, slack, HRTIMER_MODE_ABS);
+	__set_current_state(TASK_RUNNING);
+
+	/*
+	 * Prepare for the next iteration.
+	 *
+	 * The following smp_store_mb() serves two purposes.  First, it's
+	 * the counterpart rmb of the wmb in pollwake() such that data
+	 * written before wake up is always visible after wake up.
+	 * Second, the full barrier guarantees that triggered clearing
+	 * doesn't pass event check of the next iteration.  Note that
+	 * this problem doesn't exist for the first iteration as
+	 * add_wait_queue() has full barrier semantics.
+	 */
+	smp_store_mb(pwq->triggered, 0);
+
+	return rc;
+}
+EXPORT_SYMBOL(poll_schedule_timeout);
+
+/**
+ * poll_select_set_timeout - helper function to setup the timeout value
+ * @to:		pointer to timespec64 variable for the final timeout
+ * @sec:	seconds (from user space)
+ * @nsec:	nanoseconds (from user space)
+ *
+ * Note, we do not use a timespec for the user space value here, That
+ * way we can use the function for timeval and compat interfaces as well.
+ *
+ * Returns -EINVAL if sec/nsec are not normalized. Otherwise 0.
+ */
+int poll_select_set_timeout(struct timespec64 *to, time64_t sec, long nsec)
+{
+	struct timespec64 ts = {.tv_sec = sec, .tv_nsec = nsec};
+
+	if (!timespec64_valid(&ts))
+		return -EINVAL;
+
+	/* Optimize for the zero timeout value here */
+	if (!sec && !nsec) {
+		to->tv_sec = to->tv_nsec = 0;
+	} else {
+		ktime_get_ts64(to);
+		*to = timespec64_add_safe(*to, ts);
 	}
+	return 0;
+}
+
+static int poll_select_copy_remaining(struct timespec64 *end_time,
+				      void __user *p,
+				      int timeval, int ret)
+{
+	struct timespec64 rts64;
+	struct timespec rts;
+	struct timeval rtv;
+
+	if (!p)
+		return ret;
+
+	if (current->personality & STICKY_TIMEOUTS)
+		goto sticky;
+
+	/* No update for zero timeout */
+	if (!end_time->tv_sec && !end_time->tv_nsec)
+		return ret;
+
+	ktime_get_ts64(&rts64);
+	rts64 = timespec64_sub(*end_time, rts64);
+	if (rts64.tv_sec < 0)
+		rts64.tv_sec = rts64.tv_nsec = 0;
+
+	rts = timespec64_to_timespec(rts64);
+
+	if (timeval) {
+		if (sizeof(rtv) > sizeof(rtv.tv_sec) + sizeof(rtv.tv_usec))
+			memset(&rtv, 0, sizeof(rtv));
+		rtv.tv_sec = rts64.tv_sec;
+		rtv.tv_usec = rts64.tv_nsec / NSEC_PER_USEC;
+
+		if (!copy_to_user(p, &rtv, sizeof(rtv)))
+			return ret;
+
+	} else if (!copy_to_user(p, &rts, sizeof(rts)))
+		return ret;
+
+	/*
+	 * If an application puts its timeval in read-only memory, we
+	 * don't want the Linux-specific update to the timeval to
+	 * cause a fault after the select has completed
+	 * successfully. However, because we're not updating the
+	 * timeval, we can't restart the system call.
+	 */
+
+sticky:
+	if (ret == -ERESTARTNOHAND)
+		ret = -EINTR;
+	return ret;
 }
 
 #define FDS_IN(fds, n)		(fds->in + n)
@@ -130,11 +349,13 @@ static int max_select_fd(unsigned long n, fd_set_bits *fds)
 	unsigned long *open_fds;
 	unsigned long set;
 	int max;
+	struct fdtable *fdt;
 
 	/* handle last in-complete long-word first */
-	set = ~(~0UL << (n & (__NFDBITS-1)));
-	n /= __NFDBITS;
-	open_fds = current->files->open_fds->fds_bits+n;
+	set = ~(~0UL << (n & (BITS_PER_LONG-1)));
+	n /= BITS_PER_LONG;
+	fdt = files_fdtable(current->files);
+	open_fds = fdt->open_fds + n;
 	max = 0;
 	if (set) {
 		set &= BITS(fds, n);
@@ -159,31 +380,40 @@ get_max:
 			max++;
 			set >>= 1;
 		} while (set);
-		max += n * __NFDBITS;
+		max += n * BITS_PER_LONG;
 	}
 
 	return max;
 }
 
-#define BIT(i)		(1UL << ((i)&(__NFDBITS-1)))
-#define MEM(i,m)	((m)+(unsigned)(i)/__NFDBITS)
-#define ISSET(i,m)	(((i)&*(m)) != 0)
-#define SET(i,m)	(*(m) |= (i))
-
 #define POLLIN_SET (POLLRDNORM | POLLRDBAND | POLLIN | POLLHUP | POLLERR)
 #define POLLOUT_SET (POLLWRBAND | POLLWRNORM | POLLOUT | POLLERR)
 #define POLLEX_SET (POLLPRI)
 
-int do_select(int n, fd_set_bits *fds, long *timeout)
+static inline void wait_key_set(poll_table *wait, unsigned long in,
+				unsigned long out, unsigned long bit,
+				unsigned int ll_flag)
 {
+	wait->_key = POLLEX_SET | ll_flag;
+	if (in & bit)
+		wait->_key |= POLLIN_SET;
+	if (out & bit)
+		wait->_key |= POLLOUT_SET;
+}
+
+int do_select(int n, fd_set_bits *fds, struct timespec64 *end_time)
+{
+	ktime_t expire, *to = NULL;
 	struct poll_wqueues table;
 	poll_table *wait;
-	int retval, i;
-	long __timeout = *timeout;
+	int retval, i, timed_out = 0;
+	u64 slack = 0;
+	unsigned int busy_flag = net_busy_loop_on() ? POLL_BUSY_LOOP : 0;
+	unsigned long busy_end = 0;
 
- 	spin_lock(&current->files->file_lock);
+	rcu_read_lock();
 	retval = max_select_fd(n, fds);
-	spin_unlock(&current->files->file_lock);
+	rcu_read_unlock();
 
 	if (retval < 0)
 		return retval;
@@ -191,13 +421,18 @@ int do_select(int n, fd_set_bits *fds, long *timeout)
 
 	poll_initwait(&table);
 	wait = &table.pt;
-	if (!__timeout)
-		wait = NULL;
+	if (end_time && !end_time->tv_sec && !end_time->tv_nsec) {
+		wait->_qproc = NULL;
+		timed_out = 1;
+	}
+
+	if (end_time && !timed_out)
+		slack = select_estimate_accuracy(end_time);
+
 	retval = 0;
 	for (;;) {
 		unsigned long *rinp, *routp, *rexp, *inp, *outp, *exp;
-
-		set_current_state(TASK_INTERRUPTIBLE);
+		bool can_busy_loop = false;
 
 		inp = fds->in; outp = fds->out; exp = fds->ex;
 		rinp = fds->res_in; routp = fds->res_out; rexp = fds->res_ex;
@@ -205,42 +440,59 @@ int do_select(int n, fd_set_bits *fds, long *timeout)
 		for (i = 0; i < n; ++rinp, ++routp, ++rexp) {
 			unsigned long in, out, ex, all_bits, bit = 1, mask, j;
 			unsigned long res_in = 0, res_out = 0, res_ex = 0;
-			struct file_operations *f_op = NULL;
-			struct file *file = NULL;
 
 			in = *inp++; out = *outp++; ex = *exp++;
 			all_bits = in | out | ex;
 			if (all_bits == 0) {
-				i += __NFDBITS;
+				i += BITS_PER_LONG;
 				continue;
 			}
 
-			for (j = 0; j < __NFDBITS; ++j, ++i, bit <<= 1) {
+			for (j = 0; j < BITS_PER_LONG; ++j, ++i, bit <<= 1) {
+				struct fd f;
 				if (i >= n)
 					break;
 				if (!(bit & all_bits))
 					continue;
-				file = fget(i);
-				if (file) {
-					f_op = file->f_op;
+				f = fdget(i);
+				if (f.file) {
+					const struct file_operations *f_op;
+					f_op = f.file->f_op;
 					mask = DEFAULT_POLLMASK;
-					if (f_op && f_op->poll)
-						mask = (*f_op->poll)(file, retval ? NULL : wait);
-					fput(file);
+					if (f_op->poll) {
+						wait_key_set(wait, in, out,
+							     bit, busy_flag);
+						mask = (*f_op->poll)(f.file, wait);
+					}
+					fdput(f);
 					if ((mask & POLLIN_SET) && (in & bit)) {
 						res_in |= bit;
 						retval++;
+						wait->_qproc = NULL;
 					}
 					if ((mask & POLLOUT_SET) && (out & bit)) {
 						res_out |= bit;
 						retval++;
+						wait->_qproc = NULL;
 					}
 					if ((mask & POLLEX_SET) && (ex & bit)) {
 						res_ex |= bit;
 						retval++;
+						wait->_qproc = NULL;
 					}
+					/* got something, stop busy polling */
+					if (retval) {
+						can_busy_loop = false;
+						busy_flag = 0;
+
+					/*
+					 * only remember a returned
+					 * POLL_BUSY_LOOP if we asked for it
+					 */
+					} else if (busy_flag & mask)
+						can_busy_loop = true;
+
 				}
-				cond_resched();
 			}
 			if (res_in)
 				*rinp = res_in;
@@ -248,35 +500,45 @@ int do_select(int n, fd_set_bits *fds, long *timeout)
 				*routp = res_out;
 			if (res_ex)
 				*rexp = res_ex;
+			cond_resched();
 		}
-		wait = NULL;
-		if (retval || !__timeout || signal_pending(current))
+		wait->_qproc = NULL;
+		if (retval || timed_out || signal_pending(current))
 			break;
-		if(table.error) {
+		if (table.error) {
 			retval = table.error;
 			break;
 		}
-		__timeout = schedule_timeout(__timeout);
+
+		/* only if found POLL_BUSY_LOOP sockets && not out of time */
+		if (can_busy_loop && !need_resched()) {
+			if (!busy_end) {
+				busy_end = busy_loop_end_time();
+				continue;
+			}
+			if (!busy_loop_timeout(busy_end))
+				continue;
+		}
+		busy_flag = 0;
+
+		/*
+		 * If this is the first loop and we have a timeout
+		 * given, then we convert to ktime_t and set the to
+		 * pointer to the expiry value.
+		 */
+		if (end_time && !to) {
+			expire = timespec64_to_ktime(*end_time);
+			to = &expire;
+		}
+
+		if (!poll_schedule_timeout(&table, TASK_INTERRUPTIBLE,
+					   to, slack))
+			timed_out = 1;
 	}
-	__set_current_state(TASK_RUNNING);
 
 	poll_freewait(&table);
 
-	/*
-	 * Up-to-date the caller timeout.
-	 */
-	*timeout = __timeout;
 	return retval;
-}
-
-static void *select_bits_alloc(int size)
-{
-	return kmalloc(6 * size, GFP_KERNEL);
-}
-
-static void select_bits_free(void *bits, int size)
-{
-	kfree(bits);
 }
 
 /*
@@ -287,63 +549,56 @@ static void select_bits_free(void *bits, int size)
  * Update: ERESTARTSYS breaks at least the xview clock binary, so
  * I'm trying ERESTARTNOHAND which restart only when you want to.
  */
-#define MAX_SELECT_SECONDS \
-	((unsigned long) (MAX_SCHEDULE_TIMEOUT / HZ)-1)
-
-asmlinkage long
-sys_select(int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *exp, struct timeval __user *tvp)
+int core_sys_select(int n, fd_set __user *inp, fd_set __user *outp,
+			   fd_set __user *exp, struct timespec64 *end_time)
 {
 	fd_set_bits fds;
-	char *bits;
-	long timeout;
-	int ret, size, max_fdset;
-
-	timeout = MAX_SCHEDULE_TIMEOUT;
-	if (tvp) {
-		time_t sec, usec;
-
-		if (!access_ok(VERIFY_READ, tvp, sizeof(*tvp))
-		    || __get_user(sec, &tvp->tv_sec)
-		    || __get_user(usec, &tvp->tv_usec)) {
-			ret = -EFAULT;
-			goto out_nofds;
-		}
-
-		ret = -EINVAL;
-		if (sec < 0 || usec < 0)
-			goto out_nofds;
-
-		if ((unsigned long) sec < MAX_SELECT_SECONDS) {
-			timeout = ROUND_UP(usec, 1000000/HZ);
-			timeout += sec * (unsigned long) HZ;
-		}
-	}
+	void *bits;
+	int ret, max_fds;
+	size_t size, alloc_size;
+	struct fdtable *fdt;
+	/* Allocate small arguments on the stack to save memory and be faster */
+	long stack_fds[SELECT_STACK_ALLOC/sizeof(long)];
 
 	ret = -EINVAL;
 	if (n < 0)
 		goto out_nofds;
 
-	/* max_fdset can increase, so grab it once to avoid race */
-	max_fdset = current->files->max_fdset;
-	if (n > max_fdset)
-		n = max_fdset;
+	/* max_fds can increase, so grab it once to avoid race */
+	rcu_read_lock();
+	fdt = files_fdtable(current->files);
+	max_fds = fdt->max_fds;
+	rcu_read_unlock();
+	if (n > max_fds)
+		n = max_fds;
 
 	/*
 	 * We need 6 bitmaps (in/out/ex for both incoming and outgoing),
 	 * since we used fdset we need to allocate memory in units of
 	 * long-words. 
 	 */
-	ret = -ENOMEM;
 	size = FDS_BYTES(n);
-	bits = select_bits_alloc(size);
-	if (!bits)
-		goto out_nofds;
-	fds.in      = (unsigned long *)  bits;
-	fds.out     = (unsigned long *) (bits +   size);
-	fds.ex      = (unsigned long *) (bits + 2*size);
-	fds.res_in  = (unsigned long *) (bits + 3*size);
-	fds.res_out = (unsigned long *) (bits + 4*size);
-	fds.res_ex  = (unsigned long *) (bits + 5*size);
+	bits = stack_fds;
+	if (size > sizeof(stack_fds) / 6) {
+		/* Not enough space in on-stack array; must use kmalloc */
+		ret = -ENOMEM;
+		if (size > (SIZE_MAX / 6))
+			goto out_nofds;
+
+		alloc_size = 6 * size;
+		bits = kmalloc(alloc_size, GFP_KERNEL|__GFP_NOWARN);
+		if (!bits && alloc_size > PAGE_SIZE)
+			bits = vmalloc(alloc_size);
+
+		if (!bits)
+			goto out_nofds;
+	}
+	fds.in      = bits;
+	fds.out     = bits +   size;
+	fds.ex      = bits + 2*size;
+	fds.res_in  = bits + 3*size;
+	fds.res_out = bits + 4*size;
+	fds.res_ex  = bits + 5*size;
 
 	if ((ret = get_fd_set(n, inp, fds.in)) ||
 	    (ret = get_fd_set(n, outp, fds.out)) ||
@@ -353,18 +608,7 @@ sys_select(int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *exp, s
 	zero_fd_set(n, fds.res_out);
 	zero_fd_set(n, fds.res_ex);
 
-	ret = do_select(n, &fds, &timeout);
-
-	if (tvp && !(current->personality & STICKY_TIMEOUTS)) {
-		time_t sec = 0, usec = 0;
-		if (timeout) {
-			sec = timeout / HZ;
-			usec = timeout % HZ;
-			usec *= (1000000/HZ);
-		}
-		put_user(sec, &tvp->tv_sec);
-		put_user(usec, &tvp->tv_usec);
-	}
+	ret = do_select(n, &fds, end_time);
 
 	if (ret < 0)
 		goto out;
@@ -381,10 +625,126 @@ sys_select(int n, fd_set __user *inp, fd_set __user *outp, fd_set __user *exp, s
 		ret = -EFAULT;
 
 out:
-	select_bits_free(bits, size);
+	if (bits != stack_fds)
+		kvfree(bits);
 out_nofds:
 	return ret;
 }
+
+SYSCALL_DEFINE5(select, int, n, fd_set __user *, inp, fd_set __user *, outp,
+		fd_set __user *, exp, struct timeval __user *, tvp)
+{
+	struct timespec64 end_time, *to = NULL;
+	struct timeval tv;
+	int ret;
+
+	if (tvp) {
+		if (copy_from_user(&tv, tvp, sizeof(tv)))
+			return -EFAULT;
+
+		to = &end_time;
+		if (poll_select_set_timeout(to,
+				tv.tv_sec + (tv.tv_usec / USEC_PER_SEC),
+				(tv.tv_usec % USEC_PER_SEC) * NSEC_PER_USEC))
+			return -EINVAL;
+	}
+
+	ret = core_sys_select(n, inp, outp, exp, to);
+	ret = poll_select_copy_remaining(&end_time, tvp, 1, ret);
+
+	return ret;
+}
+
+static long do_pselect(int n, fd_set __user *inp, fd_set __user *outp,
+		       fd_set __user *exp, struct timespec __user *tsp,
+		       const sigset_t __user *sigmask, size_t sigsetsize)
+{
+	sigset_t ksigmask, sigsaved;
+	struct timespec ts;
+	struct timespec64 ts64, end_time, *to = NULL;
+	int ret;
+
+	if (tsp) {
+		if (copy_from_user(&ts, tsp, sizeof(ts)))
+			return -EFAULT;
+		ts64 = timespec_to_timespec64(ts);
+
+		to = &end_time;
+		if (poll_select_set_timeout(to, ts64.tv_sec, ts64.tv_nsec))
+			return -EINVAL;
+	}
+
+	if (sigmask) {
+		/* XXX: Don't preclude handling different sized sigset_t's.  */
+		if (sigsetsize != sizeof(sigset_t))
+			return -EINVAL;
+		if (copy_from_user(&ksigmask, sigmask, sizeof(ksigmask)))
+			return -EFAULT;
+
+		sigdelsetmask(&ksigmask, sigmask(SIGKILL)|sigmask(SIGSTOP));
+		sigprocmask(SIG_SETMASK, &ksigmask, &sigsaved);
+	}
+
+	ret = core_sys_select(n, inp, outp, exp, to);
+	ret = poll_select_copy_remaining(&end_time, tsp, 0, ret);
+
+	if (ret == -ERESTARTNOHAND) {
+		/*
+		 * Don't restore the signal mask yet. Let do_signal() deliver
+		 * the signal on the way back to userspace, before the signal
+		 * mask is restored.
+		 */
+		if (sigmask) {
+			memcpy(&current->saved_sigmask, &sigsaved,
+					sizeof(sigsaved));
+			set_restore_sigmask();
+		}
+	} else if (sigmask)
+		sigprocmask(SIG_SETMASK, &sigsaved, NULL);
+
+	return ret;
+}
+
+/*
+ * Most architectures can't handle 7-argument syscalls. So we provide a
+ * 6-argument version where the sixth argument is a pointer to a structure
+ * which has a pointer to the sigset_t itself followed by a size_t containing
+ * the sigset size.
+ */
+SYSCALL_DEFINE6(pselect6, int, n, fd_set __user *, inp, fd_set __user *, outp,
+		fd_set __user *, exp, struct timespec __user *, tsp,
+		void __user *, sig)
+{
+	size_t sigsetsize = 0;
+	sigset_t __user *up = NULL;
+
+	if (sig) {
+		if (!access_ok(VERIFY_READ, sig, sizeof(void *)+sizeof(size_t))
+		    || __get_user(up, (sigset_t __user * __user *)sig)
+		    || __get_user(sigsetsize,
+				(size_t __user *)(sig+sizeof(void *))))
+			return -EFAULT;
+	}
+
+	return do_pselect(n, inp, outp, exp, tsp, up, sigsetsize);
+}
+
+#ifdef __ARCH_WANT_SYS_OLD_SELECT
+struct sel_arg_struct {
+	unsigned long n;
+	fd_set __user *inp, *outp, *exp;
+	struct timeval __user *tvp;
+};
+
+SYSCALL_DEFINE1(old_select, struct sel_arg_struct __user *, arg)
+{
+	struct sel_arg_struct a;
+
+	if (copy_from_user(&a, arg, sizeof(a)))
+		return -EFAULT;
+	return sys_select(a.n, a.inp, a.outp, a.exp, a.tvp);
+}
+#endif
 
 struct poll_list {
 	struct poll_list *next;
@@ -394,141 +754,302 @@ struct poll_list {
 
 #define POLLFD_PER_PAGE  ((PAGE_SIZE-sizeof(struct poll_list)) / sizeof(struct pollfd))
 
-static void do_pollfd(unsigned int num, struct pollfd * fdpage,
-	poll_table ** pwait, int *count)
+/*
+ * Fish for pollable events on the pollfd->fd file descriptor. We're only
+ * interested in events matching the pollfd->events mask, and the result
+ * matching that mask is both recorded in pollfd->revents and returned. The
+ * pwait poll_table will be used by the fd-provided poll handler for waiting,
+ * if pwait->_qproc is non-NULL.
+ */
+static inline unsigned int do_pollfd(struct pollfd *pollfd, poll_table *pwait,
+				     bool *can_busy_poll,
+				     unsigned int busy_flag)
 {
-	int i;
+	unsigned int mask;
+	int fd;
 
-	for (i = 0; i < num; i++) {
-		int fd;
-		unsigned int mask;
-		struct pollfd *fdp;
-
-		mask = 0;
-		fdp = fdpage+i;
-		fd = fdp->fd;
-		if (fd >= 0) {
-			struct file * file = fget(fd);
-			mask = POLLNVAL;
-			if (file != NULL) {
-				mask = DEFAULT_POLLMASK;
-				if (file->f_op && file->f_op->poll)
-					mask = file->f_op->poll(file, *pwait);
-				mask &= fdp->events | POLLERR | POLLHUP;
-				fput(file);
+	mask = 0;
+	fd = pollfd->fd;
+	if (fd >= 0) {
+		struct fd f = fdget(fd);
+		mask = POLLNVAL;
+		if (f.file) {
+			mask = DEFAULT_POLLMASK;
+			if (f.file->f_op->poll) {
+				pwait->_key = pollfd->events|POLLERR|POLLHUP;
+				pwait->_key |= busy_flag;
+				mask = f.file->f_op->poll(f.file, pwait);
+				if (mask & busy_flag)
+					*can_busy_poll = true;
 			}
-			if (mask) {
-				*pwait = NULL;
-				(*count)++;
-			}
+			/* Mask out unneeded events. */
+			mask &= pollfd->events | POLLERR | POLLHUP;
+			fdput(f);
 		}
-		fdp->revents = mask;
 	}
+	pollfd->revents = mask;
+
+	return mask;
 }
 
-static int do_poll(unsigned int nfds,  struct poll_list *list,
-			struct poll_wqueues *wait, long timeout)
+static int do_poll(struct poll_list *list, struct poll_wqueues *wait,
+		   struct timespec64 *end_time)
 {
-	int count = 0;
 	poll_table* pt = &wait->pt;
+	ktime_t expire, *to = NULL;
+	int timed_out = 0, count = 0;
+	u64 slack = 0;
+	unsigned int busy_flag = net_busy_loop_on() ? POLL_BUSY_LOOP : 0;
+	unsigned long busy_end = 0;
 
-	if (!timeout)
-		pt = NULL;
- 
+	/* Optimise the no-wait case */
+	if (end_time && !end_time->tv_sec && !end_time->tv_nsec) {
+		pt->_qproc = NULL;
+		timed_out = 1;
+	}
+
+	if (end_time && !timed_out)
+		slack = select_estimate_accuracy(end_time);
+
 	for (;;) {
 		struct poll_list *walk;
-		set_current_state(TASK_INTERRUPTIBLE);
-		walk = list;
-		while(walk != NULL) {
-			do_pollfd( walk->len, walk->entries, &pt, &count);
-			walk = walk->next;
+		bool can_busy_loop = false;
+
+		for (walk = list; walk != NULL; walk = walk->next) {
+			struct pollfd * pfd, * pfd_end;
+
+			pfd = walk->entries;
+			pfd_end = pfd + walk->len;
+			for (; pfd != pfd_end; pfd++) {
+				/*
+				 * Fish for events. If we found one, record it
+				 * and kill poll_table->_qproc, so we don't
+				 * needlessly register any other waiters after
+				 * this. They'll get immediately deregistered
+				 * when we break out and return.
+				 */
+				if (do_pollfd(pfd, pt, &can_busy_loop,
+					      busy_flag)) {
+					count++;
+					pt->_qproc = NULL;
+					/* found something, stop busy polling */
+					busy_flag = 0;
+					can_busy_loop = false;
+				}
+			}
 		}
-		pt = NULL;
-		if (count || !timeout || signal_pending(current))
+		/*
+		 * All waiters have already been registered, so don't provide
+		 * a poll_table->_qproc to them on the next loop iteration.
+		 */
+		pt->_qproc = NULL;
+		if (!count) {
+			count = wait->error;
+			if (signal_pending(current))
+				count = -EINTR;
+		}
+		if (count || timed_out)
 			break;
-		count = wait->error;
-		if (count)
-			break;
-		timeout = schedule_timeout(timeout);
+
+		/* only if found POLL_BUSY_LOOP sockets && not out of time */
+		if (can_busy_loop && !need_resched()) {
+			if (!busy_end) {
+				busy_end = busy_loop_end_time();
+				continue;
+			}
+			if (!busy_loop_timeout(busy_end))
+				continue;
+		}
+		busy_flag = 0;
+
+		/*
+		 * If this is the first loop and we have a timeout
+		 * given, then we convert to ktime_t and set the to
+		 * pointer to the expiry value.
+		 */
+		if (end_time && !to) {
+			expire = timespec64_to_ktime(*end_time);
+			to = &expire;
+		}
+
+		if (!poll_schedule_timeout(wait, TASK_INTERRUPTIBLE, to, slack))
+			timed_out = 1;
 	}
-	__set_current_state(TASK_RUNNING);
 	return count;
 }
 
-asmlinkage long sys_poll(struct pollfd __user * ufds, unsigned int nfds, long timeout)
+#define N_STACK_PPS ((sizeof(stack_pps) - sizeof(struct poll_list))  / \
+			sizeof(struct pollfd))
+
+int do_sys_poll(struct pollfd __user *ufds, unsigned int nfds,
+		struct timespec64 *end_time)
 {
 	struct poll_wqueues table;
- 	int fdcount, err;
- 	unsigned int i;
-	struct poll_list *head;
- 	struct poll_list *walk;
+ 	int err = -EFAULT, fdcount, len, size;
+	/* Allocate small arguments on the stack to save memory and be
+	   faster - use long to make sure the buffer is aligned properly
+	   on 64 bit archs to avoid unaligned access */
+	long stack_pps[POLL_STACK_ALLOC/sizeof(long)];
+	struct poll_list *const head = (struct poll_list *)stack_pps;
+ 	struct poll_list *walk = head;
+ 	unsigned long todo = nfds;
 
-	/* Do a sanity check on nfds ... */
-	if (nfds > current->files->max_fdset && nfds > OPEN_MAX)
+	if (nfds > rlimit(RLIMIT_NOFILE))
 		return -EINVAL;
 
-	if (timeout) {
-		/* Careful about overflow in the intermediate values */
-		if ((unsigned long) timeout < MAX_SCHEDULE_TIMEOUT / HZ)
-			timeout = (unsigned long)(timeout*HZ+999)/1000+1;
-		else /* Negative or overflow */
-			timeout = MAX_SCHEDULE_TIMEOUT;
+	len = min_t(unsigned int, nfds, N_STACK_PPS);
+	for (;;) {
+		walk->next = NULL;
+		walk->len = len;
+		if (!len)
+			break;
+
+		if (copy_from_user(walk->entries, ufds + nfds-todo,
+					sizeof(struct pollfd) * walk->len))
+			goto out_fds;
+
+		todo -= walk->len;
+		if (!todo)
+			break;
+
+		len = min(todo, POLLFD_PER_PAGE);
+		size = sizeof(struct poll_list) + sizeof(struct pollfd) * len;
+		walk = walk->next = kmalloc(size, GFP_KERNEL);
+		if (!walk) {
+			err = -ENOMEM;
+			goto out_fds;
+		}
 	}
 
 	poll_initwait(&table);
+	fdcount = do_poll(head, &table, end_time);
+	poll_freewait(&table);
 
-	head = NULL;
-	walk = NULL;
-	i = nfds;
-	err = -ENOMEM;
-	while(i!=0) {
-		struct poll_list *pp;
-		pp = kmalloc(sizeof(struct poll_list)+
-				sizeof(struct pollfd)*
-				(i>POLLFD_PER_PAGE?POLLFD_PER_PAGE:i),
-					GFP_KERNEL);
-		if(pp==NULL)
-			goto out_fds;
-		pp->next=NULL;
-		pp->len = (i>POLLFD_PER_PAGE?POLLFD_PER_PAGE:i);
-		if (head == NULL)
-			head = pp;
-		else
-			walk->next = pp;
-
-		walk = pp;
-		if (copy_from_user(pp->entries, ufds + nfds-i, 
-				sizeof(struct pollfd)*pp->len)) {
-			err = -EFAULT;
-			goto out_fds;
-		}
-		i -= pp->len;
-	}
-	fdcount = do_poll(nfds, head, &table, timeout);
-
-	/* OK, now copy the revents fields back to user space. */
-	walk = head;
-	err = -EFAULT;
-	while(walk != NULL) {
+	for (walk = head; walk; walk = walk->next) {
 		struct pollfd *fds = walk->entries;
 		int j;
 
-		for (j=0; j < walk->len; j++, ufds++) {
-			if(__put_user(fds[j].revents, &ufds->revents))
+		for (j = 0; j < walk->len; j++, ufds++)
+			if (__put_user(fds[j].revents, &ufds->revents))
 				goto out_fds;
-		}
-		walk = walk->next;
   	}
+
 	err = fdcount;
-	if (!fdcount && signal_pending(current))
-		err = -EINTR;
 out_fds:
-	walk = head;
-	while(walk!=NULL) {
-		struct poll_list *pp = walk->next;
-		kfree(walk);
-		walk = pp;
+	walk = head->next;
+	while (walk) {
+		struct poll_list *pos = walk;
+		walk = walk->next;
+		kfree(pos);
 	}
-	poll_freewait(&table);
+
 	return err;
+}
+
+static long do_restart_poll(struct restart_block *restart_block)
+{
+	struct pollfd __user *ufds = restart_block->poll.ufds;
+	int nfds = restart_block->poll.nfds;
+	struct timespec64 *to = NULL, end_time;
+	int ret;
+
+	if (restart_block->poll.has_timeout) {
+		end_time.tv_sec = restart_block->poll.tv_sec;
+		end_time.tv_nsec = restart_block->poll.tv_nsec;
+		to = &end_time;
+	}
+
+	ret = do_sys_poll(ufds, nfds, to);
+
+	if (ret == -EINTR) {
+		restart_block->fn = do_restart_poll;
+		ret = -ERESTART_RESTARTBLOCK;
+	}
+	return ret;
+}
+
+SYSCALL_DEFINE3(poll, struct pollfd __user *, ufds, unsigned int, nfds,
+		int, timeout_msecs)
+{
+	struct timespec64 end_time, *to = NULL;
+	int ret;
+
+	if (timeout_msecs >= 0) {
+		to = &end_time;
+		poll_select_set_timeout(to, timeout_msecs / MSEC_PER_SEC,
+			NSEC_PER_MSEC * (timeout_msecs % MSEC_PER_SEC));
+	}
+
+	ret = do_sys_poll(ufds, nfds, to);
+
+	if (ret == -EINTR) {
+		struct restart_block *restart_block;
+
+		restart_block = &current->restart_block;
+		restart_block->fn = do_restart_poll;
+		restart_block->poll.ufds = ufds;
+		restart_block->poll.nfds = nfds;
+
+		if (timeout_msecs >= 0) {
+			restart_block->poll.tv_sec = end_time.tv_sec;
+			restart_block->poll.tv_nsec = end_time.tv_nsec;
+			restart_block->poll.has_timeout = 1;
+		} else
+			restart_block->poll.has_timeout = 0;
+
+		ret = -ERESTART_RESTARTBLOCK;
+	}
+	return ret;
+}
+
+SYSCALL_DEFINE5(ppoll, struct pollfd __user *, ufds, unsigned int, nfds,
+		struct timespec __user *, tsp, const sigset_t __user *, sigmask,
+		size_t, sigsetsize)
+{
+	sigset_t ksigmask, sigsaved;
+	struct timespec ts;
+	struct timespec64 end_time, *to = NULL;
+	int ret;
+
+	if (tsp) {
+		if (copy_from_user(&ts, tsp, sizeof(ts)))
+			return -EFAULT;
+
+		to = &end_time;
+		if (poll_select_set_timeout(to, ts.tv_sec, ts.tv_nsec))
+			return -EINVAL;
+	}
+
+	if (sigmask) {
+		/* XXX: Don't preclude handling different sized sigset_t's.  */
+		if (sigsetsize != sizeof(sigset_t))
+			return -EINVAL;
+		if (copy_from_user(&ksigmask, sigmask, sizeof(ksigmask)))
+			return -EFAULT;
+
+		sigdelsetmask(&ksigmask, sigmask(SIGKILL)|sigmask(SIGSTOP));
+		sigprocmask(SIG_SETMASK, &ksigmask, &sigsaved);
+	}
+
+	ret = do_sys_poll(ufds, nfds, to);
+
+	/* We can restart this syscall, usually */
+	if (ret == -EINTR) {
+		/*
+		 * Don't restore the signal mask yet. Let do_signal() deliver
+		 * the signal on the way back to userspace, before the signal
+		 * mask is restored.
+		 */
+		if (sigmask) {
+			memcpy(&current->saved_sigmask, &sigsaved,
+					sizeof(sigsaved));
+			set_restore_sigmask();
+		}
+		ret = -ERESTARTNOHAND;
+	} else if (sigmask)
+		sigprocmask(SIG_SETMASK, &sigsaved, NULL);
+
+	ret = poll_select_copy_remaining(&end_time, tsp, 0, ret);
+
+	return ret;
 }

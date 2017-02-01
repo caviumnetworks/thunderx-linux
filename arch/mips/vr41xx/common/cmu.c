@@ -2,8 +2,8 @@
  *  cmu.c, Clock Mask Unit routines for the NEC VR4100 series.
  *
  *  Copyright (C) 2001-2002  MontaVista Software Inc.
- *    Author: Yoichi Yuasa <yyuasa@mvista.com or source@mvista.com>
- *  Copuright (C) 2003-2005  Yoichi Yuasa <yuasa@hh.iij4u.or.jp>
+ *    Author: Yoichi Yuasa <source@mvista.com>
+ *  Copyright (C) 2003-2005  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -21,11 +21,11 @@
  */
 /*
  * Changes:
- *  MontaVista Software Inc. <yyuasa@mvista.com> or <source@mvista.com>
+ *  MontaVista Software Inc. <source@mvista.com>
  *  - New creation, NEC VR4122 and VR4131 are supported.
  *  - Added support for NEC VR4111 and VR4121.
  *
- *  Yoichi Yuasa <yuasa@hh.iij4u.or.jp>
+ *  Yoichi Yuasa <yuasa@linux-mips.org>
  *  - Added support for NEC VR4133.
  */
 #include <linux/init.h>
@@ -69,7 +69,7 @@
 
 static void __iomem *cmu_base;
 static uint16_t cmuclkmsk, cmuclkmsk2;
-static spinlock_t cmu_lock;
+static DEFINE_SPINLOCK(cmu_lock);
 
 #define cmu_read(offset)		readw(cmu_base + (offset))
 #define cmu_write(offset, value)	writew((value), cmu_base + (offset))
@@ -95,8 +95,8 @@ void vr41xx_supply_clock(vr41xx_clock_t clock)
 		cmuclkmsk |= MSKFIR | MSKFFIR;
 		break;
 	case DSIU_CLOCK:
-		if (current_cpu_data.cputype == CPU_VR4111 ||
-		    current_cpu_data.cputype == CPU_VR4121)
+		if (current_cpu_type() == CPU_VR4111 ||
+		    current_cpu_type() == CPU_VR4121)
 			cmuclkmsk |= MSKDSIU;
 		else
 			cmuclkmsk |= MSKSIU | MSKDSIU;
@@ -146,8 +146,8 @@ void vr41xx_mask_clock(vr41xx_clock_t clock)
 		cmuclkmsk &= ~MSKPIU;
 		break;
 	case SIU_CLOCK:
-		if (current_cpu_data.cputype == CPU_VR4111 ||
-		    current_cpu_data.cputype == CPU_VR4121) {
+		if (current_cpu_type() == CPU_VR4111 ||
+		    current_cpu_type() == CPU_VR4121) {
 			cmuclkmsk &= ~(MSKSIU | MSKSSIU);
 		} else {
 			if (cmuclkmsk & MSKDSIU)
@@ -166,8 +166,8 @@ void vr41xx_mask_clock(vr41xx_clock_t clock)
 		cmuclkmsk &= ~(MSKFIR | MSKFFIR);
 		break;
 	case DSIU_CLOCK:
-		if (current_cpu_data.cputype == CPU_VR4111 ||
-		    current_cpu_data.cputype == CPU_VR4121) {
+		if (current_cpu_type() == CPU_VR4111 ||
+		    current_cpu_type() == CPU_VR4121) {
 			cmuclkmsk &= ~MSKDSIU;
 		} else {
 			if (cmuclkmsk & MSKSSIU)
@@ -216,25 +216,25 @@ static int __init vr41xx_cmu_init(void)
 {
 	unsigned long start, size;
 
-	switch (current_cpu_data.cputype) {
-        case CPU_VR4111:
-        case CPU_VR4121:
+	switch (current_cpu_type()) {
+	case CPU_VR4111:
+	case CPU_VR4121:
 		start = CMU_TYPE1_BASE;
 		size = CMU_TYPE1_SIZE;
-                break;
-        case CPU_VR4122:
-        case CPU_VR4131:
+		break;
+	case CPU_VR4122:
+	case CPU_VR4131:
 		start = CMU_TYPE2_BASE;
 		size = CMU_TYPE2_SIZE;
 		break;
-        case CPU_VR4133:
+	case CPU_VR4133:
 		start = CMU_TYPE3_BASE;
 		size = CMU_TYPE3_SIZE;
-                break;
+		break;
 	default:
 		panic("Unexpected CPU of NEC VR4100 series");
 		break;
-        }
+	}
 
 	if (request_mem_region(start, size, "CMU") == NULL)
 		return -EBUSY;
@@ -246,7 +246,7 @@ static int __init vr41xx_cmu_init(void)
 	}
 
 	cmuclkmsk = cmu_read(CMUCLKMSK);
-	if (current_cpu_data.cputype == CPU_VR4133)
+	if (current_cpu_type() == CPU_VR4133)
 		cmuclkmsk2 = cmu_read(CMUCLKMSK2);
 
 	spin_lock_init(&cmu_lock);

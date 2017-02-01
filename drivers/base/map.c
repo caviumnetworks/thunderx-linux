@@ -11,6 +11,7 @@
 
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/mutex.h>
 #include <linux/kdev_t.h>
 #include <linux/kobject.h>
 #include <linux/kobj_map.h>
@@ -25,7 +26,7 @@ struct kobj_map {
 		int (*lock)(dev_t, void *);
 		void *data;
 	} *probes[255];
-	struct semaphore *sem;
+	struct mutex *lock;
 };
 
 int kobj_map(struct kobj_map *domain, dev_t dev, unsigned long range,
@@ -40,8 +41,7 @@ int kobj_map(struct kobj_map *domain, dev_t dev, unsigned long range,
 	if (n > 255)
 		n = 255;
 
-	p = kmalloc(sizeof(struct probe) * n, GFP_KERNEL);
-
+	p = kmalloc_array(n, sizeof(struct probe), GFP_KERNEL);
 	if (p == NULL)
 		return -ENOMEM;
 
@@ -53,7 +53,7 @@ int kobj_map(struct kobj_map *domain, dev_t dev, unsigned long range,
 		p->range = range;
 		p->data = data;
 	}
-	down(domain->sem);
+	mutex_lock(domain->lock);
 	for (i = 0, p -= n; i < n; i++, p++, index++) {
 		struct probe **s = &domain->probes[index % 255];
 		while (*s && (*s)->range < range)
@@ -61,7 +61,7 @@ int kobj_map(struct kobj_map *domain, dev_t dev, unsigned long range,
 		p->next = *s;
 		*s = p;
 	}
-	up(domain->sem);
+	mutex_unlock(domain->lock);
 	return 0;
 }
 
@@ -75,7 +75,7 @@ void kobj_unmap(struct kobj_map *domain, dev_t dev, unsigned long range)
 	if (n > 255)
 		n = 255;
 
-	down(domain->sem);
+	mutex_lock(domain->lock);
 	for (i = 0; i < n; i++, index++) {
 		struct probe **s;
 		for (s = &domain->probes[index % 255]; *s; s = &(*s)->next) {
@@ -88,7 +88,7 @@ void kobj_unmap(struct kobj_map *domain, dev_t dev, unsigned long range)
 			}
 		}
 	}
-	up(domain->sem);
+	mutex_unlock(domain->lock);
 	kfree(found);
 }
 
@@ -99,7 +99,7 @@ struct kobject *kobj_lookup(struct kobj_map *domain, dev_t dev, int *index)
 	unsigned long best = ~0UL;
 
 retry:
-	down(domain->sem);
+	mutex_lock(domain->lock);
 	for (p = domain->probes[MAJOR(dev) % 255]; p; p = p->next) {
 		struct kobject *(*probe)(dev_t, int *, void *);
 		struct module *owner;
@@ -120,7 +120,7 @@ retry:
 			module_put(owner);
 			continue;
 		}
-		up(domain->sem);
+		mutex_unlock(domain->lock);
 		kobj = probe(dev, index, data);
 		/* Currently ->owner protects _only_ ->probe() itself. */
 		module_put(owner);
@@ -128,14 +128,14 @@ retry:
 			return kobj;
 		goto retry;
 	}
-	up(domain->sem);
+	mutex_unlock(domain->lock);
 	return NULL;
 }
 
-struct kobj_map *kobj_map_init(kobj_probe_t *base_probe, struct semaphore *sem)
+struct kobj_map *kobj_map_init(kobj_probe_t *base_probe, struct mutex *lock)
 {
 	struct kobj_map *p = kmalloc(sizeof(struct kobj_map), GFP_KERNEL);
-	struct probe *base = kmalloc(sizeof(struct probe), GFP_KERNEL);
+	struct probe *base = kzalloc(sizeof(*base), GFP_KERNEL);
 	int i;
 
 	if ((p == NULL) || (base == NULL)) {
@@ -144,12 +144,11 @@ struct kobj_map *kobj_map_init(kobj_probe_t *base_probe, struct semaphore *sem)
 		return NULL;
 	}
 
-	memset(base, 0, sizeof(struct probe));
 	base->dev = 1;
 	base->range = ~0;
 	base->get = base_probe;
 	for (i = 0; i < 255; i++)
 		p->probes[i] = base;
-	p->sem = sem;
+	p->lock = lock;
 	return p;
 }

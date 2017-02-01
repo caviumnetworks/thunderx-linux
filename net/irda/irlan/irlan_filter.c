@@ -1,25 +1,25 @@
 /*********************************************************************
- *                
+ *
  * Filename:      irlan_filter.c
- * Version:       
- * Description:   
+ * Version:
+ * Description:
  * Status:        Experimental.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Fri Jan 29 11:16:38 1999
  * Modified at:   Sat Oct 30 12:58:45 1999
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
- * 
+ *
  *     Copyright (c) 1998-1999 Dag Brattli, All Rights Reserved.
- *      
- *     This program is free software; you can redistribute it and/or 
- *     modify it under the terms of the GNU General Public License as 
- *     published by the Free Software Foundation; either version 2 of 
+ *
+ *     This program is free software; you can redistribute it and/or
+ *     modify it under the terms of the GNU General Public License as
+ *     published by the Free Software Foundation; either version 2 of
  *     the License, or (at your option) any later version.
- *  
- *     Neither Dag Brattli nor University of Tromsø admit liability nor
- *     provide warranty for any of this software. This material is 
+ *
+ *     Neither Dag Brattli nor University of TromsÃ¸ admit liability nor
+ *     provide warranty for any of this software. This material is
  *     provided "AS-IS" and at no charge.
- *     
+ *
  ********************************************************************/
 
 #include <linux/skbuff.h>
@@ -27,6 +27,7 @@
 #include <linux/seq_file.h>
 
 #include <net/irda/irlan_common.h>
+#include <net/irda/irlan_filter.h>
 
 /*
  * Function irlan_filter_request (self, skb)
@@ -39,20 +40,20 @@ void irlan_filter_request(struct irlan_cb *self, struct sk_buff *skb)
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == IRLAN_MAGIC, return;);
 
-	if ((self->provider.filter_type == IRLAN_DIRECTED) && 
+	if ((self->provider.filter_type == IRLAN_DIRECTED) &&
 	    (self->provider.filter_operation == DYNAMIC))
 	{
-		IRDA_DEBUG(0, "Giving peer a dynamic Ethernet address\n");
+		pr_debug("Giving peer a dynamic Ethernet address\n");
 		self->provider.mac_address[0] = 0x40;
 		self->provider.mac_address[1] = 0x00;
 		self->provider.mac_address[2] = 0x00;
 		self->provider.mac_address[3] = 0x00;
-		
+
 		/* Use arbitration value to generate MAC address */
 		if (self->provider.access_type == ACCESS_PEER) {
-			self->provider.mac_address[4] = 
+			self->provider.mac_address[4] =
 				self->provider.send_arb_val & 0xff;
-			self->provider.mac_address[5] = 
+			self->provider.mac_address[5] =
 				(self->provider.send_arb_val >> 8) & 0xff;
 		} else {
 			/* Just generate something for now */
@@ -64,64 +65,64 @@ void irlan_filter_request(struct irlan_cb *self, struct sk_buff *skb)
 		skb->data[1] = 0x03;
 		irlan_insert_string_param(skb, "FILTER_MODE", "NONE");
 		irlan_insert_short_param(skb, "MAX_ENTRY", 0x0001);
-		irlan_insert_array_param(skb, "FILTER_ENTRY", 
+		irlan_insert_array_param(skb, "FILTER_ENTRY",
 					 self->provider.mac_address, 6);
 		return;
 	}
-	
-	if ((self->provider.filter_type == IRLAN_DIRECTED) && 
+
+	if ((self->provider.filter_type == IRLAN_DIRECTED) &&
 	    (self->provider.filter_mode == FILTER))
 	{
-		IRDA_DEBUG(0, "Directed filter on\n");
+		pr_debug("Directed filter on\n");
 		skb->data[0] = 0x00; /* Success */
 		skb->data[1] = 0x00;
 		return;
 	}
-	if ((self->provider.filter_type == IRLAN_DIRECTED) && 
+	if ((self->provider.filter_type == IRLAN_DIRECTED) &&
 	    (self->provider.filter_mode == NONE))
 	{
-		IRDA_DEBUG(0, "Directed filter off\n");
+		pr_debug("Directed filter off\n");
 		skb->data[0] = 0x00; /* Success */
 		skb->data[1] = 0x00;
 		return;
 	}
 
-	if ((self->provider.filter_type == IRLAN_BROADCAST) && 
+	if ((self->provider.filter_type == IRLAN_BROADCAST) &&
 	    (self->provider.filter_mode == FILTER))
 	{
-		IRDA_DEBUG(0, "Broadcast filter on\n");
+		pr_debug("Broadcast filter on\n");
 		skb->data[0] = 0x00; /* Success */
 		skb->data[1] = 0x00;
 		return;
 	}
-	if ((self->provider.filter_type == IRLAN_BROADCAST) && 
+	if ((self->provider.filter_type == IRLAN_BROADCAST) &&
 	    (self->provider.filter_mode == NONE))
 	{
-		IRDA_DEBUG(0, "Broadcast filter off\n");
+		pr_debug("Broadcast filter off\n");
 		skb->data[0] = 0x00; /* Success */
 		skb->data[1] = 0x00;
 		return;
 	}
-	if ((self->provider.filter_type == IRLAN_MULTICAST) && 
+	if ((self->provider.filter_type == IRLAN_MULTICAST) &&
 	    (self->provider.filter_mode == FILTER))
 	{
-		IRDA_DEBUG(0, "Multicast filter on\n");
+		pr_debug("Multicast filter on\n");
 		skb->data[0] = 0x00; /* Success */
 		skb->data[1] = 0x00;
 		return;
 	}
-	if ((self->provider.filter_type == IRLAN_MULTICAST) && 
+	if ((self->provider.filter_type == IRLAN_MULTICAST) &&
 	    (self->provider.filter_mode == NONE))
 	{
-		IRDA_DEBUG(0, "Multicast filter off\n");
+		pr_debug("Multicast filter off\n");
 		skb->data[0] = 0x00; /* Success */
 		skb->data[1] = 0x00;
 		return;
 	}
-	if ((self->provider.filter_type == IRLAN_MULTICAST) && 
+	if ((self->provider.filter_type == IRLAN_MULTICAST) &&
 	    (self->provider.filter_operation == GET))
 	{
-		IRDA_DEBUG(0, "Multicast filter get\n");
+		pr_debug("Multicast filter get\n");
 		skb->data[0] = 0x00; /* Success? */
 		skb->data[1] = 0x02;
 		irlan_insert_string_param(skb, "FILTER_MODE", "NONE");
@@ -131,7 +132,7 @@ void irlan_filter_request(struct irlan_cb *self, struct sk_buff *skb)
 	skb->data[0] = 0x00; /* Command not supported */
 	skb->data[1] = 0x00;
 
-	IRDA_DEBUG(0, "Not implemented!\n");
+	pr_debug("Not implemented!\n");
 }
 
 /*
@@ -142,22 +143,15 @@ void irlan_filter_request(struct irlan_cb *self, struct sk_buff *skb)
  */
 void irlan_check_command_param(struct irlan_cb *self, char *param, char *value)
 {
-	__u8 *bytes;
-
-	IRDA_DEBUG(4, "%s()\n", __FUNCTION__ );
-
-	bytes = value;
-
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == IRLAN_MAGIC, return;);
 
-	IRDA_DEBUG(4, "%s, %s\n", param, value);
+	pr_debug("%s, %s\n", param, value);
 
 	/*
 	 *  This is experimental!! DB.
 	 */
 	 if (strcmp(param, "MODE") == 0) {
-		IRDA_DEBUG(0, "%s()\n", __FUNCTION__ );
 		self->use_udata = TRUE;
 		return;
 	}

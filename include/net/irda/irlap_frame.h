@@ -24,9 +24,7 @@
  *     GNU General Public License for more details.
  * 
  *     You should have received a copy of the GNU General Public License 
- *     along with this program; if not, write to the Free Software 
- *     Foundation, Inc., 59 Temple Place, Suite 330, Boston, 
- *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *     
  ********************************************************************/
 
@@ -74,44 +72,71 @@ struct discovery_t;
 
 #define PF_BIT    0x10 /* Poll/final bit */
 
+/* Some IrLAP field lengths */
+/*
+ * Only baud rate triplet is 4 bytes (PV can be 2 bytes).
+ * All others params (7) are 3 bytes, so that's 7*3 + 1*4 bytes.
+ */
+#define IRLAP_NEGOCIATION_PARAMS_LEN 25
+#define IRLAP_DISCOVERY_INFO_LEN     32
+
+struct disc_frame {
+	__u8 caddr;          /* Connection address */
+	__u8 control;
+} __packed;
+
 struct xid_frame {
 	__u8  caddr; /* Connection address */
 	__u8  control;
 	__u8  ident; /* Should always be XID_FORMAT */ 
-	__u32 saddr; /* Source device address */
-	__u32 daddr; /* Destination device address */
+	__le32 saddr; /* Source device address */
+	__le32 daddr; /* Destination device address */
 	__u8  flags; /* Discovery flags */
 	__u8  slotnr;
 	__u8  version;
-} IRDA_PACK;
+} __packed;
 
 struct test_frame {
 	__u8 caddr;          /* Connection address */
 	__u8 control;
-	__u32 saddr;         /* Source device address */
-	__u32 daddr;         /* Destination device address */
-} IRDA_PACK;
+	__le32 saddr;         /* Source device address */
+	__le32 daddr;         /* Destination device address */
+} __packed;
 
 struct ua_frame {
 	__u8 caddr;
 	__u8 control;
+	__le32 saddr; /* Source device address */
+	__le32 daddr; /* Dest device address */
+} __packed;
 
-	__u32 saddr; /* Source device address */
-	__u32 daddr; /* Dest device address */
-} IRDA_PACK;
-	
+struct dm_frame {
+	__u8 caddr;          /* Connection address */
+	__u8 control;
+} __packed;
+
+struct rd_frame {
+	__u8 caddr;          /* Connection address */
+	__u8 control;
+} __packed;
+
+struct rr_frame {
+	__u8 caddr;          /* Connection address */
+	__u8 control;
+} __packed;
+
 struct i_frame {
 	__u8 caddr;
 	__u8 control;
-} IRDA_PACK;
+} __packed;
 
 struct snrm_frame {
 	__u8  caddr;
 	__u8  control;
-	__u32 saddr;
-	__u32 daddr;
+	__le32 saddr;
+	__le32 daddr;
 	__u8  ncaddr;
-} IRDA_PACK;
+} __packed;
 
 void irlap_queue_xmit(struct irlap_cb *self, struct sk_buff *skb);
 void irlap_send_discovery_xid_frame(struct irlap_cb *, int S, __u8 s, 
@@ -136,7 +161,7 @@ void irlap_resend_rejected_frame(struct irlap_cb *self, int command);
 void irlap_send_ui_frame(struct irlap_cb *self, struct sk_buff *skb,
 			 __u8 caddr, int command);
 
-extern int irlap_insert_qos_negotiation_params(struct irlap_cb *self, 
-					       struct sk_buff *skb);
+int irlap_insert_qos_negotiation_params(struct irlap_cb *self,
+					struct sk_buff *skb);
 
 #endif

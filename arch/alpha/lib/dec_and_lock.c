@@ -6,7 +6,8 @@
  */
 
 #include <linux/spinlock.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
+#include <linux/export.h>
 
   asm (".text					\n\
 	.global _atomic_dec_and_lock		\n\
@@ -30,8 +31,7 @@ _atomic_dec_and_lock:				\n\
 	.previous				\n\
 	.end _atomic_dec_and_lock");
 
-static int __attribute_used__
-atomic_dec_and_lock_1(atomic_t *atomic, spinlock_t *lock)
+static int __used atomic_dec_and_lock_1(atomic_t *atomic, spinlock_t *lock)
 {
 	/* Slow path */
 	spin_lock(lock);
@@ -40,3 +40,4 @@ atomic_dec_and_lock_1(atomic_t *atomic, spinlock_t *lock)
 	spin_unlock(lock);
 	return 0;
 }
+EXPORT_SYMBOL(_atomic_dec_and_lock);

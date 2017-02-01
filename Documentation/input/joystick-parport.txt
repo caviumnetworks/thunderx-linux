@@ -2,7 +2,6 @@
 	       (c) 1998-2000 Vojtech Pavlik <vojtech@ucw.cz>
 	       (c) 1998 Andree Borrmann <a.borrmann@tu-bs.de>
 			     Sponsored by SuSE
-	$Id: joystick-parport.txt,v 1.6 2001/09/25 09:31:32 vojtech Exp $
 ----------------------------------------------------------------------------
 
 0. Disclaimer
@@ -36,12 +35,12 @@ with them.
 
   All NES and SNES use the same synchronous serial protocol, clocked from
 the computer's side (and thus timing insensitive). To allow up to 5 NES
-and/or SNES gamepads connected to the parallel port at once, the output
-lines of the parallel port are shared, while one of 5 available input lines
-is assigned to each gamepad.
+and/or SNES gamepads and/or SNES mice connected to the parallel port at once,
+the output lines of the parallel port are shared, while one of 5 available
+input lines is assigned to each gamepad.
 
   This protocol is handled by the gamecon.c driver, so that's the one
-you'll use for NES and SNES gamepads.
+you'll use for NES, SNES gamepads and SNES mice.
 
   The main problem with PC parallel ports is that they don't have +5V power
 source on any of their pins. So, if you want a reliable source of power
@@ -106,7 +105,7 @@ A, Turbo B, Select and Start, and is connected through 5 wires, then it is
 either a NES or NES clone and will work with this connection. SNES gamepads
 also use 5 wires, but have more buttons. They will work as well, of course.
 
-Pinout for NES gamepads                 Pinout for SNES gamepads
+Pinout for NES gamepads                 Pinout for SNES gamepads and mice
 
 	   +----> Power                   +-----------------------\
 	   |                            7 | o  o  o  o |  x  x  o  | 1
@@ -273,7 +272,7 @@ if you want to use gamecon.c.
 
   Also, the connection is a bit more complex. You'll need a bunch of diodes,
 and one pullup resistor. First, you connect the Directions and the button
-the same as for db9, however with the diodes inbetween.
+the same as for db9, however with the diodes between.
 
 	    Diodes
 (pin 2) -----|<|----> Up
@@ -454,9 +453,10 @@ uses the following kernel/module command line:
 	  6  | N64 pad
 	  7  | Sony PSX controller
 	  8  | Sony PSX DDR controller
+	  9  | SNES mouse
 
-  The exact type of the PSX controller type is autoprobed when used so
-hot swapping should work (but is not recomended).
+  The exact type of the PSX controller type is autoprobed when used, so
+hot swapping should work (but is not recommended).
 
   Should you want to use more than one of parallel ports at once, you can use
 gamecon.map2 and gamecon.map3 as additional command line parameters for two
@@ -464,8 +464,8 @@ more parallel ports.
 
   There are two options specific to PSX driver portion.  gamecon.psx_delay sets
 the command delay when talking to the controllers. The default of 25 should
-work but you can try lowering it for better performace. If your pads don't
-respond try raising it untill they work. Setting the type to 8 allows the
+work but you can try lowering it for better performance. If your pads don't
+respond try raising it until they work. Setting the type to 8 allows the
 driver to be used with Dance Dance Revolution or similar games. Arrow keys are
 registered as key presses instead of X and Y axes.
 

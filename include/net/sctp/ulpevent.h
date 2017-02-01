@@ -1,4 +1,4 @@
-/* SCTP kernel reference Implementation
+/* SCTP kernel implementation
  * (C) Copyright IBM Corp. 2001, 2004
  * Copyright (c) 1999-2000 Cisco, Inc.
  * Copyright (c) 1999-2001 Motorola, Inc.
@@ -10,40 +10,33 @@
  * sctp_ulpevent type is used to carry information from the state machine
  * upwards to the ULP.
  *
- * This file is part of the SCTP kernel reference Implementation
+ * This file is part of the SCTP kernel implementation
  *
- * The SCTP reference implementation is free software;
+ * This SCTP implementation is free software;
  * you can redistribute it and/or modify it under the terms of
  * the GNU General Public License as published by
  * the Free Software Foundation; either version 2, or (at your option)
  * any later version.
  *
- * The SCTP reference implementation is distributed in the hope that it
+ * This SCTP implementation is distributed in the hope that it
  * will be useful, but WITHOUT ANY WARRANTY; without even the implied
  *                 ************************
  * warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  * See the GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with GNU CC; see the file COPYING.  If not, write to
- * the Free Software Foundation, 59 Temple Place - Suite 330,
- * Boston, MA 02111-1307, USA.
+ * along with GNU CC; see the file COPYING.  If not, see
+ * <http://www.gnu.org/licenses/>.
  *
  * Please send any bug reports or fixes you make to the
  * email address(es):
- *    lksctp developers <lksctp-developers@lists.sourceforge.net>
- *
- * Or submit a bug report through the following website:
- *    http://www.sf.net/projects/lksctp
+ *    lksctp developers <linux-sctp@vger.kernel.org>
  *
  * Written or modified by:
  *   Jon Grimm             <jgrimm@us.ibm.com>
  *   La Monte H.P. Yarroll <piggy@acm.org>
  *   Karl Knutson          <karl@athena.chicago.il.us>
  *   Sridhar Samudrala     <sri@us.ibm.com>
- *
- * Any bugs reported given to us we will try to fix... any fixes shared will
- * be incorporated into the next SCTP release.
  */
 
 #ifndef __sctp_ulpevent_h__
@@ -55,18 +48,19 @@
  */
 struct sctp_ulpevent {
 	struct sctp_association *asoc;
-	__u16 stream;
-	__u16 ssn;
-	__u16 flags;
+	struct sctp_chunk *chunk;
+	unsigned int rmem_len;
 	__u32 ppid;
 	__u32 tsn;
 	__u32 cumtsn;
-	int msg_flags;
-	int iif;
+	__u16 stream;
+	__u16 ssn;
+	__u16 flags;
+	__u16 msg_flags;
 };
 
 /* Retrieve the skb this event sits inside of. */
-static inline struct sk_buff *sctp_event2skb(struct sctp_ulpevent *ev)
+static inline struct sk_buff *sctp_event2skb(const struct sctp_ulpevent *ev)
 {
 	return container_of((void *)ev, struct sk_buff, cb);
 }
@@ -79,7 +73,7 @@ static inline struct sctp_ulpevent *sctp_skb2event(struct sk_buff *skb)
 
 void sctp_ulpevent_free(struct sctp_ulpevent *);
 int sctp_ulpevent_is_notification(const struct sctp_ulpevent *);
-void sctp_queue_purge_ulpevents(struct sk_buff_head *list);
+unsigned int sctp_queue_purge_ulpevents(struct sk_buff_head *list);
 
 struct sctp_ulpevent *sctp_ulpevent_make_assoc_change(
 	const struct sctp_association *asoc,
@@ -88,7 +82,8 @@ struct sctp_ulpevent *sctp_ulpevent_make_assoc_change(
 	__u16 error,
 	__u16 outbound,
 	__u16 inbound,
-	int gfp);
+	struct sctp_chunk *chunk,
+	gfp_t gfp);
 
 struct sctp_ulpevent *sctp_ulpevent_make_peer_addr_change(
 	const struct sctp_association *asoc,
@@ -96,38 +91,50 @@ struct sctp_ulpevent *sctp_ulpevent_make_peer_addr_change(
 	int flags,
 	int state,
 	int error,
-	int gfp);
+	gfp_t gfp);
 
 struct sctp_ulpevent *sctp_ulpevent_make_remote_error(
 	const struct sctp_association *asoc,
 	struct sctp_chunk *chunk,
 	__u16 flags,
-	int gfp);
+	gfp_t gfp);
 struct sctp_ulpevent *sctp_ulpevent_make_send_failed(
 	const struct sctp_association *asoc,
 	struct sctp_chunk *chunk,
 	__u16 flags,
 	__u32 error,
-	int gfp);
+	gfp_t gfp);
 
 struct sctp_ulpevent *sctp_ulpevent_make_shutdown_event(
 	const struct sctp_association *asoc,
 	__u16 flags,
-	int gfp);
+	gfp_t gfp);
 
 struct sctp_ulpevent *sctp_ulpevent_make_pdapi(
 	const struct sctp_association *asoc,
-	__u32 indication, int gfp);
+	__u32 indication, gfp_t gfp);
 
-struct sctp_ulpevent *sctp_ulpevent_make_adaption_indication(
-	const struct sctp_association *asoc, int gfp);
+struct sctp_ulpevent *sctp_ulpevent_make_adaptation_indication(
+	const struct sctp_association *asoc, gfp_t gfp);
 
 struct sctp_ulpevent *sctp_ulpevent_make_rcvmsg(struct sctp_association *asoc,
 	struct sctp_chunk *chunk,
-	int gfp);
+	gfp_t gfp);
+
+struct sctp_ulpevent *sctp_ulpevent_make_authkey(
+	const struct sctp_association *asoc, __u16 key_id,
+	__u32 indication, gfp_t gfp);
+
+struct sctp_ulpevent *sctp_ulpevent_make_sender_dry_event(
+	const struct sctp_association *asoc, gfp_t gfp);
 
 void sctp_ulpevent_read_sndrcvinfo(const struct sctp_ulpevent *event,
-	struct msghdr *);
+				   struct msghdr *);
+void sctp_ulpevent_read_rcvinfo(const struct sctp_ulpevent *event,
+				struct msghdr *);
+void sctp_ulpevent_read_nxtinfo(const struct sctp_ulpevent *event,
+				struct msghdr *, struct sock *sk);
+
 __u16 sctp_ulpevent_get_notification_type(const struct sctp_ulpevent *event);
 
 /* Is this event type enabled? */
@@ -153,10 +160,3 @@ static inline int sctp_ulpevent_is_enabled(const struct sctp_ulpevent *event,
 }
 
 #endif /* __sctp_ulpevent_h__ */
-
-
-
-
-
-
-

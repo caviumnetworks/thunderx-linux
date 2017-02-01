@@ -6,12 +6,12 @@
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/agp_backend.h>
-#include <linux/gfp.h>
 #include <linux/page-flags.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
 #include "agp.h"
 
-#define AMD_MMBASE	0x14
+#define AMD_MMBASE_BAR	1
 #define AMD_APSIZE	0xac
 #define AMD_MODECNTL	0xb0
 #define AMD_MODECNTL2	0xb2
@@ -41,17 +41,8 @@ static int amd_create_page_map(struct amd_page_map *page_map)
 	if (page_map->real == NULL)
 		return -ENOMEM;
 
-	SetPageReserved(virt_to_page(page_map->real));
-	global_cache_flush();
-	page_map->remapped = ioremap_nocache(virt_to_phys(page_map->real),
-					    PAGE_SIZE);
-	if (page_map->remapped == NULL) {
-		ClearPageReserved(virt_to_page(page_map->real));
-		free_page((unsigned long) page_map->real);
-		page_map->real = NULL;
-		return -ENOMEM;
-	}
-	global_cache_flush();
+	set_memory_uc((unsigned long)page_map->real, 1);
+	page_map->remapped = page_map->real;
 
 	for (i = 0; i < PAGE_SIZE / sizeof(unsigned long); i++) {
 		writel(agp_bridge->scratch_page, page_map->remapped+i);
@@ -63,8 +54,7 @@ static int amd_create_page_map(struct amd_page_map *page_map)
 
 static void amd_free_page_map(struct amd_page_map *page_map)
 {
-	iounmap(page_map->remapped);
-	ClearPageReserved(virt_to_page(page_map->real));
+	set_memory_wb((unsigned long)page_map->real, 1);
 	free_page((unsigned long) page_map->real);
 }
 
@@ -94,25 +84,22 @@ static int amd_create_gatt_pages(int nr_tables)
 	int retval = 0;
 	int i;
 
-	tables = kmalloc((nr_tables + 1) * sizeof(struct amd_page_map *),
-			 GFP_KERNEL);
+	tables = kzalloc((nr_tables + 1) * sizeof(struct amd_page_map *),GFP_KERNEL);
 	if (tables == NULL)
 		return -ENOMEM;
 
-	memset (tables, 0, sizeof(struct amd_page_map *) * (nr_tables + 1));
 	for (i = 0; i < nr_tables; i++) {
-		entry = kmalloc(sizeof(struct amd_page_map), GFP_KERNEL);
+		entry = kzalloc(sizeof(struct amd_page_map), GFP_KERNEL);
+		tables[i] = entry;
 		if (entry == NULL) {
 			retval = -ENOMEM;
 			break;
 		}
-		memset (entry, 0, sizeof(struct amd_page_map));
-		tables[i] = entry;
 		retval = amd_create_page_map(entry);
 		if (retval != 0)
 			break;
 	}
-	amd_irongate_private.num_tables = nr_tables;
+	amd_irongate_private.num_tables = i;
 	amd_irongate_private.gatt_pages = tables;
 
 	if (retval != 0)
@@ -121,7 +108,7 @@ static int amd_create_gatt_pages(int nr_tables)
 	return retval;
 }
 
-/* Since we don't need contigious memory we just try
+/* Since we don't need contiguous memory we just try
  * to get the gatt table once
  */
 
@@ -136,9 +123,9 @@ static int amd_create_gatt_table(struct agp_bridge_data *bridge)
 {
 	struct aper_size_info_lvl2 *value;
 	struct amd_page_map page_dir;
+	unsigned long __iomem *cur_gatt;
 	unsigned long addr;
 	int retval;
-	u32 temp;
 	int i;
 
 	value = A_SIZE_LVL2(agp_bridge->current_size);
@@ -161,8 +148,7 @@ static int amd_create_gatt_table(struct agp_bridge_data *bridge)
 	 * used to program the agp master not the cpu
 	 */
 
-	pci_read_config_dword(agp_bridge->dev, AGP_APBASE, &temp);
-	addr = (temp & PCI_BASE_ADDRESS_MEM_MASK);
+	addr = pci_bus_address(agp_bridge->dev, AGP_APERTURE_BAR);
 	agp_bridge->gart_bus_addr = addr;
 
 	/* Calculate the agp offset */
@@ -170,6 +156,13 @@ static int amd_create_gatt_table(struct agp_bridge_data *bridge)
 		writel(virt_to_phys(amd_irongate_private.gatt_pages[i]->real) | 1,
 			page_dir.remapped+GET_PAGE_DIR_OFF(addr));
 		readl(page_dir.remapped+GET_PAGE_DIR_OFF(addr));	/* PCI Posting. */
+	}
+
+	for (i = 0; i < value->num_entries; i++) {
+		addr = (i * PAGE_SIZE) + agp_bridge->gart_bus_addr;
+		cur_gatt = GET_GATT(addr);
+		writel(agp_bridge->scratch_page, cur_gatt+GET_GATT_OFF(addr));
+		readl(cur_gatt+GET_GATT_OFF(addr));	/* PCI Posting. */
 	}
 
 	return 0;
@@ -212,15 +205,19 @@ static int amd_irongate_fetch_size(void)
 static int amd_irongate_configure(void)
 {
 	struct aper_size_info_lvl2 *current_size;
+	phys_addr_t reg;
 	u32 temp;
 	u16 enable_reg;
 
 	current_size = A_SIZE_LVL2(agp_bridge->current_size);
 
-	/* Get the memory mapped registers */
-	pci_read_config_dword(agp_bridge->dev, AMD_MMBASE, &temp);
-	temp = (temp & PCI_BASE_ADDRESS_MEM_MASK);
-	amd_irongate_private.registers = (volatile u8 __iomem *) ioremap(temp, 4096);
+	if (!amd_irongate_private.registers) {
+		/* Get the memory mapped registers */
+		reg = pci_resource_start(agp_bridge->dev, AMD_MMBASE_BAR);
+		amd_irongate_private.registers = (volatile u8 __iomem *) ioremap(reg, 4096);
+		if (!amd_irongate_private.registers)
+			return -ENOMEM;
+	}
 
 	/* Write out the address of the gatt table */
 	writel(agp_bridge->gatt_bus_addr, amd_irongate_private.registers+AMD_ATTBASE);
@@ -273,7 +270,7 @@ static void amd_irongate_cleanup(void)
  * This routine could be implemented by taking the addresses
  * written to the GATT, and flushing them individually.  However
  * currently it just flushes the whole table.  Which is probably
- * more efficent, since agp_memory blocks can be a large number of
+ * more efficient, since agp_memory blocks can be a large number of
  * entries.
  */
 
@@ -291,7 +288,8 @@ static int amd_insert_memory(struct agp_memory *mem, off_t pg_start, int type)
 
 	num_entries = A_SIZE_LVL2(agp_bridge->current_size)->num_entries;
 
-	if (type != 0 || mem->type != 0)
+	if (type != mem->type ||
+	    agp_bridge->driver->agp_type_to_mask_type(agp_bridge, type))
 		return -EINVAL;
 
 	if ((pg_start + mem->page_count) > num_entries)
@@ -306,16 +304,18 @@ static int amd_insert_memory(struct agp_memory *mem, off_t pg_start, int type)
 		j++;
 	}
 
-	if (mem->is_flushed == FALSE) {
+	if (!mem->is_flushed) {
 		global_cache_flush();
-		mem->is_flushed = TRUE;
+		mem->is_flushed = true;
 	}
 
 	for (i = 0, j = pg_start; i < mem->page_count; i++, j++) {
 		addr = (j * PAGE_SIZE) + agp_bridge->gart_bus_addr;
 		cur_gatt = GET_GATT(addr);
 		writel(agp_generic_mask_memory(agp_bridge,
-			mem->memory[i], mem->type), cur_gatt+GET_GATT_OFF(addr));
+					       page_to_phys(mem->pages[i]),
+					       mem->type),
+		       cur_gatt+GET_GATT_OFF(addr));
 		readl(cur_gatt+GET_GATT_OFF(addr));	/* PCI Posting. */
 	}
 	amd_irongate_tlbflush(mem);
@@ -328,7 +328,8 @@ static int amd_remove_memory(struct agp_memory *mem, off_t pg_start, int type)
 	unsigned long __iomem *cur_gatt;
 	unsigned long addr;
 
-	if (type != 0 || mem->type != 0)
+	if (type != mem->type ||
+	    agp_bridge->driver->agp_type_to_mask_type(agp_bridge, type))
 		return -EINVAL;
 
 	for (i = pg_start; i < (mem->page_count + pg_start); i++) {
@@ -342,7 +343,7 @@ static int amd_remove_memory(struct agp_memory *mem, off_t pg_start, int type)
 	return 0;
 }
 
-static struct aper_size_info_lvl2 amd_irongate_sizes[7] =
+static const struct aper_size_info_lvl2 amd_irongate_sizes[7] =
 {
 	{2048, 524288, 0x0000000c},
 	{1024, 262144, 0x0000000a},
@@ -353,16 +354,17 @@ static struct aper_size_info_lvl2 amd_irongate_sizes[7] =
 	{32, 8192, 0x00000000}
 };
 
-static struct gatt_mask amd_irongate_masks[] =
+static const struct gatt_mask amd_irongate_masks[] =
 {
 	{.mask = 1, .type = 0}
 };
 
-struct agp_bridge_driver amd_irongate_driver = {
+static const struct agp_bridge_driver amd_irongate_driver = {
 	.owner			= THIS_MODULE,
 	.aperture_sizes		= amd_irongate_sizes,
 	.size_type		= LVL2_APER_SIZE,
 	.num_aperture_sizes	= 7,
+	.needs_scratch_page	= true,
 	.configure		= amd_irongate_configure,
 	.fetch_size		= amd_irongate_fetch_size,
 	.cleanup		= amd_irongate_cleanup,
@@ -378,10 +380,13 @@ struct agp_bridge_driver amd_irongate_driver = {
 	.alloc_by_type		= agp_generic_alloc_by_type,
 	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
+	.agp_alloc_pages	= agp_generic_alloc_pages,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_destroy_pages	= agp_generic_destroy_pages,
+	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
-static struct agp_device_ids amd_agp_device_ids[] __devinitdata =
+static struct agp_device_ids amd_agp_device_ids[] =
 {
 	{
 		.device_id	= PCI_DEVICE_ID_AMD_FE_GATE_7006,
@@ -398,8 +403,8 @@ static struct agp_device_ids amd_agp_device_ids[] __devinitdata =
 	{ }, /* dummy final entry, always present */
 };
 
-static int __devinit agp_amdk7_probe(struct pci_dev *pdev,
-				     const struct pci_device_id *ent)
+static int agp_amdk7_probe(struct pci_dev *pdev,
+			   const struct pci_device_id *ent)
 {
 	struct agp_bridge_data *bridge;
 	u8 cap_ptr;
@@ -410,8 +415,8 @@ static int __devinit agp_amdk7_probe(struct pci_dev *pdev,
 		return -ENODEV;
 
 	j = ent - agp_amdk7_pci_table;
-	printk(KERN_INFO PFX "Detected AMD %s chipset\n",
-	       amd_agp_device_ids[j].chipset_name);
+	dev_info(&pdev->dev, "AMD %s chipset\n",
+		 amd_agp_device_ids[j].chipset_name);
 
 	bridge = agp_alloc_bridge();
 	if (!bridge)
@@ -427,19 +432,16 @@ static int __devinit agp_amdk7_probe(struct pci_dev *pdev,
 	   system controller may experience noise due to strong drive strengths
 	 */
 	if (agp_bridge->dev->device == PCI_DEVICE_ID_AMD_FE_GATE_7006) {
-		u8 cap_ptr=0;
 		struct pci_dev *gfxcard=NULL;
+
+		cap_ptr = 0;
 		while (!cap_ptr) {
 			gfxcard = pci_get_class(PCI_CLASS_DISPLAY_VGA<<8, gfxcard);
 			if (!gfxcard) {
-				printk (KERN_INFO PFX "Couldn't find an AGP VGA controller.\n");
+				dev_info(&pdev->dev, "no AGP VGA controller\n");
 				return -ENODEV;
 			}
 			cap_ptr = pci_find_capability(gfxcard, PCI_CAP_ID_AGP);
-			if (!cap_ptr) {
-				pci_dev_put(gfxcard);
-				continue;
-			}
 		}
 
 		/* With so many variants of NVidia cards, it's simpler just
@@ -447,7 +449,7 @@ static int __devinit agp_amdk7_probe(struct pci_dev *pdev,
 		   (if necessary at all). */
 		if (gfxcard->vendor == PCI_VENDOR_ID_NVIDIA) {
 			agp_bridge->flags |= AGP_ERRATA_1X;
-			printk (KERN_INFO PFX "AMD 751 chipset with NVidia GeForce detected. Forcing to 1X due to errata.\n");
+			dev_info(&pdev->dev, "AMD 751 chipset with NVidia GeForce; forcing 1X due to errata\n");
 		}
 		pci_dev_put(gfxcard);
 	}
@@ -459,13 +461,11 @@ static int __devinit agp_amdk7_probe(struct pci_dev *pdev,
 	 * erratum 46: Setup violation on AGP SBA pins - Disable side band addressing.
 	 * With this lot disabled, we should prevent lockups. */
 	if (agp_bridge->dev->device == PCI_DEVICE_ID_AMD_FE_GATE_700E) {
-		u8 revision=0;
-		pci_read_config_byte(pdev, PCI_REVISION_ID, &revision);
-		if (revision == 0x10 || revision == 0x11) {
+		if (pdev->revision == 0x10 || pdev->revision == 0x11) {
 			agp_bridge->flags = AGP_ERRATA_FASTWRITES;
 			agp_bridge->flags |= AGP_ERRATA_SBA;
 			agp_bridge->flags |= AGP_ERRATA_1X;
-			printk (KERN_INFO PFX "AMD 761 chipset with errata detected - disabling AGP fast writes & SBA and forcing to 1X.\n");
+			dev_info(&pdev->dev, "AMD 761 chipset with errata; disabling AGP fast writes & SBA and forcing to 1X\n");
 		}
 	}
 
@@ -478,13 +478,33 @@ static int __devinit agp_amdk7_probe(struct pci_dev *pdev,
 	return agp_add_bridge(bridge);
 }
 
-static void __devexit agp_amdk7_remove(struct pci_dev *pdev)
+static void agp_amdk7_remove(struct pci_dev *pdev)
 {
 	struct agp_bridge_data *bridge = pci_get_drvdata(pdev);
 
 	agp_remove_bridge(bridge);
 	agp_put_bridge(bridge);
 }
+
+#ifdef CONFIG_PM
+
+static int agp_amdk7_suspend(struct pci_dev *pdev, pm_message_t state)
+{
+	pci_save_state(pdev);
+	pci_set_power_state(pdev, pci_choose_state(pdev, state));
+
+	return 0;
+}
+
+static int agp_amdk7_resume(struct pci_dev *pdev)
+{
+	pci_set_power_state(pdev, PCI_D0);
+	pci_restore_state(pdev);
+
+	return amd_irongate_driver.configure();
+}
+
+#endif /* CONFIG_PM */
 
 /* must be the same order as name table above */
 static struct pci_device_id agp_amdk7_pci_table[] = {
@@ -522,6 +542,10 @@ static struct pci_driver agp_amdk7_pci_driver = {
 	.id_table	= agp_amdk7_pci_table,
 	.probe		= agp_amdk7_probe,
 	.remove		= agp_amdk7_remove,
+#ifdef CONFIG_PM
+	.suspend	= agp_amdk7_suspend,
+	.resume		= agp_amdk7_resume,
+#endif
 };
 
 static int __init agp_amdk7_init(void)

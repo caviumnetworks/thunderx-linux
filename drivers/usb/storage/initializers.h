@@ -1,6 +1,5 @@
-/* Header file for Special Initializers for certain USB Mass Storage devices
- *
- * $Id: initializers.h,v 1.1 2000/08/29 23:07:02 mdharm Exp $
+/*
+ * Header file for Special Initializers for certain USB Mass Storage devices
  *
  * Current development and maintenance by:
  *   (c) 1999, 2000 Matthew Dharm (mdharm-usb@one-eyed-alien.net)
@@ -37,18 +36,20 @@
  * 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#include <linux/config.h>
 #include "usb.h"
 #include "transport.h"
 
-/* This places the Shuttle/SCM USB<->SCSI bridge devices in multi-target
- * mode */
+/*
+ * This places the Shuttle/SCM USB<->SCSI bridge devices in multi-target
+ * mode
+ */
 int usb_stor_euscsi_init(struct us_data *us);
 
-#ifdef CONFIG_USB_STORAGE_SDDR09
-int sddr09_init(struct us_data *us);
-#endif
-
-/* This function is required to activate all four slots on the UCR-61S2B
- * flash reader */
+/*
+ * This function is required to activate all four slots on the UCR-61S2B
+ * flash reader
+ */
 int usb_stor_ucr61s2b_init(struct us_data *us);
+
+/* This places the HUAWEI E220 devices in multi-port mode */
+int usb_stor_huawei_e220_init(struct us_data *us);

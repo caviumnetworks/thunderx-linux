@@ -1,9 +1,9 @@
 /*
  *  bcu.c, Bus Control Unit routines for the NEC VR4100 series.
  *
- *  Copyright (C) 2002  MontaVista Software Inc.
- *    Author: Yoichi Yuasa <yyuasa@mvista.com, or source@mvista.com>
- *  Copyright (C) 2003-2005  Yoichi Yuasa <yuasa@hh.iij4u.or.jp>
+ *  Copyright (C) 2002	MontaVista Software Inc.
+ *    Author: Yoichi Yuasa <source@mvista.com>
+ *  Copyright (C) 2003-2005  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -21,11 +21,11 @@
  */
 /*
  * Changes:
- *  MontaVista Software Inc. <yyuasa@mvista.com> or <source@mvista.com>
+ *  MontaVista Software Inc. <source@mvista.com>
  *  - New creation, NEC VR4122 and VR4131 are supported.
  *  - Added support for NEC VR4111 and VR4121.
  *
- *  Yoichi Yuasa <yuasa@hh.iij4u.or.jp>
+ *  Yoichi Yuasa <yuasa@linux-mips.org>
  *  - Added support for NEC VR4133.
  */
 #include <linux/kernel.h>
@@ -70,7 +70,7 @@ EXPORT_SYMBOL_GPL(vr41xx_get_tclock_frequency);
 
 static inline uint16_t read_clkspeed(void)
 {
-	switch (current_cpu_data.cputype) {
+	switch (current_cpu_type()) {
 	case CPU_VR4111:
 	case CPU_VR4121: return readw(CLKSPEEDREG_TYPE1);
 	case CPU_VR4122:
@@ -88,7 +88,7 @@ static inline unsigned long calculate_pclock(uint16_t clkspeed)
 {
 	unsigned long pclock = 0;
 
-	switch (current_cpu_data.cputype) {
+	switch (current_cpu_type()) {
 	case CPU_VR4111:
 	case CPU_VR4121:
 		pclock = 18432000 * 64;
@@ -138,7 +138,7 @@ static inline unsigned long calculate_vtclock(uint16_t clkspeed, unsigned long p
 {
 	unsigned long vtclock = 0;
 
-	switch (current_cpu_data.cputype) {
+	switch (current_cpu_type()) {
 	case CPU_VR4111:
 		/* The NEC VR4111 doesn't have the VTClock. */
 		break;
@@ -176,18 +176,18 @@ static inline unsigned long calculate_vtclock(uint16_t clkspeed, unsigned long p
 }
 
 static inline unsigned long calculate_tclock(uint16_t clkspeed, unsigned long pclock,
-                                             unsigned long vtclock)
+					     unsigned long vtclock)
 {
 	unsigned long tclock = 0;
 
-	switch (current_cpu_data.cputype) {
+	switch (current_cpu_type()) {
 	case CPU_VR4111:
 		if (!(clkspeed & DIV2B))
-        		tclock = pclock / 2;
+			tclock = pclock / 2;
 		else if (!(clkspeed & DIV3B))
-        		tclock = pclock / 3;
+			tclock = pclock / 3;
 		else if (!(clkspeed & DIV4B))
-        		tclock = pclock / 4;
+			tclock = pclock / 4;
 		break;
 	case CPU_VR4121:
 		tclock = pclock / DIVT(clkspeed);

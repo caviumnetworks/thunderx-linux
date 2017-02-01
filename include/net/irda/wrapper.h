@@ -17,7 +17,7 @@
  *     published by the Free Software Foundation; either version 2 of 
  *     the License, or (at your option) any later version.
  *
- *     Neither Dag Brattli nor University of Tromsø admit liability nor
+ *     Neither Dag Brattli nor University of TromsÃ¸ admit liability nor
  *     provide warranty for any of this software. This material is 
  *     provided "AS-IS" and at no charge.
  *
@@ -42,7 +42,7 @@
 
 #define IRDA_TRANS 0x20    /* Asynchronous transparency modifier */       
 
-/* States for receving a frame in async mode */
+/* States for receiving a frame in async mode */
 enum {
 	OUTSIDE_FRAME, 
 	BEGIN_FRAME, 

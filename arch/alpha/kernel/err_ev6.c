@@ -6,11 +6,10 @@
  *	Error handling code supporting Alpha systems
  */
 
-#include <linux/init.h>
-#include <linux/pci.h>
 #include <linux/sched.h>
 
 #include <asm/io.h>
+#include <asm/irq_regs.h>
 #include <asm/hwrpb.h>
 #include <asm/smp.h>
 #include <asm/err_common.h>
@@ -90,11 +89,13 @@ static int
 ev6_parse_cbox(u64 c_addr, u64 c1_syn, u64 c2_syn, 
 	       u64 c_stat, u64 c_sts, int print)
 {
-	char *sourcename[] = { "UNKNOWN", "UNKNOWN", "UNKNOWN",
-			       "MEMORY", "BCACHE", "DCACHE", 
-			       "BCACHE PROBE", "BCACHE PROBE" };
-	char *streamname[] = { "D", "I" };
-	char *bitsname[] = { "SINGLE", "DOUBLE" };
+	static const char * const sourcename[] = {
+		"UNKNOWN", "UNKNOWN", "UNKNOWN",
+		"MEMORY", "BCACHE", "DCACHE",
+		"BCACHE PROBE", "BCACHE PROBE"
+	};
+	static const char * const streamname[] = { "D", "I" };
+	static const char * const bitsname[] = { "SINGLE", "DOUBLE" };
 	int status = MCHK_DISPOSITION_REPORT;
 	int source = -1, stream = -1, bits = -1;
 
@@ -157,8 +158,8 @@ ev6_parse_cbox(u64 c_addr, u64 c1_syn, u64 c2_syn,
 		       err_print_prefix,
 		       streamname[stream], bitsname[bits], sourcename[source]);
 
-	printk("%s    Address: 0x%016lx\n"
-	         "    Syndrome[upper.lower]: %02lx.%02lx\n", 
+	printk("%s    Address: 0x%016llx\n"
+	         "    Syndrome[upper.lower]: %02llx.%02llx\n",
 	       err_print_prefix,
 	       c_addr,
 	       c2_syn, c1_syn);
@@ -229,7 +230,7 @@ ev6_process_logout_frame(struct el_common *mchk_header, int print)
 }
 
 void
-ev6_machine_check(u64 vector, u64 la_ptr, struct pt_regs *regs)
+ev6_machine_check(unsigned long vector, unsigned long la_ptr)
 {
 	struct el_common *mchk_header = (struct el_common *)la_ptr;
 
@@ -260,7 +261,7 @@ ev6_machine_check(u64 vector, u64 la_ptr, struct pt_regs *regs)
 		       (unsigned int)vector, (int)smp_processor_id());
 		
 		ev6_process_logout_frame(mchk_header, 1);
-		dik_show_regs(regs, NULL);
+		dik_show_regs(get_irq_regs(), NULL);
 
 		err_print_prefix = saved_err_prefix;
 	}

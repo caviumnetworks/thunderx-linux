@@ -20,14 +20,10 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
- * $Id: msnd.c,v 1.17 1999/03/21 16:50:09 andrewtv Exp $
- *
  ********************************************************************/
 
-#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/types.h>
 #include <linux/delay.h>
@@ -48,7 +44,7 @@
 static multisound_dev_t		*devs[MSND_MAX_DEVS];
 static int			num_devs;
 
-int __init msnd_register(multisound_dev_t *dev)
+int msnd_register(multisound_dev_t *dev)
 {
 	int i;
 
@@ -96,16 +92,14 @@ void msnd_fifo_init(msnd_fifo *f)
 
 void msnd_fifo_free(msnd_fifo *f)
 {
-	if (f->data) {
-		vfree(f->data);
-		f->data = NULL;
-	}
+	vfree(f->data);
+	f->data = NULL;
 }
 
 int msnd_fifo_alloc(msnd_fifo *f, size_t n)
 {
 	msnd_fifo_free(f);
-	f->data = (char *)vmalloc(n);
+	f->data = vmalloc(n);
 	f->n = n;
 	f->tail = 0;
 	f->head = 0;

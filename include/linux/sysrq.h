@@ -11,10 +11,11 @@
  *	based upon discusions in irc://irc.openprojects.net/#kernelnewbies
  */
 
-#include <linux/config.h>
+#ifndef _LINUX_SYSRQ_H
+#define _LINUX_SYSRQ_H
 
-struct pt_regs;
-struct tty_struct;
+#include <linux/errno.h>
+#include <linux/types.h>
 
 /* Possible values of bitmask for enabling sysrq functions */
 /* 0x0001 is reserved for enable everything */
@@ -28,7 +29,7 @@ struct tty_struct;
 #define SYSRQ_ENABLE_RTNICE	0x0100
 
 struct sysrq_key_op {
-	void (*handler)(int, struct pt_regs *, struct tty_struct *);
+	void (*handler)(int);
 	char *help_msg;
 	char *action_msg;
 	int enable_mask;
@@ -41,20 +42,34 @@ struct sysrq_key_op {
  * are available -- else NULL's).
  */
 
-void handle_sysrq(int, struct pt_regs *, struct tty_struct *);
-void __handle_sysrq(int, struct pt_regs *, struct tty_struct *, int check_mask);
-int register_sysrq_key(int, struct sysrq_key_op *);
-int unregister_sysrq_key(int, struct sysrq_key_op *);
+void handle_sysrq(int key);
+void __handle_sysrq(int key, bool check_mask);
+int register_sysrq_key(int key, struct sysrq_key_op *op);
+int unregister_sysrq_key(int key, struct sysrq_key_op *op);
 struct sysrq_key_op *__sysrq_get_key_op(int key);
+
+int sysrq_toggle_support(int enable_mask);
 
 #else
 
-static inline int __reterr(void)
+static inline void handle_sysrq(int key)
+{
+}
+
+static inline void __handle_sysrq(int key, bool check_mask)
+{
+}
+
+static inline int register_sysrq_key(int key, struct sysrq_key_op *op)
 {
 	return -EINVAL;
 }
 
-#define register_sysrq_key(ig,nore) __reterr()
-#define unregister_sysrq_key(ig,nore) __reterr()
+static inline int unregister_sysrq_key(int key, struct sysrq_key_op *op)
+{
+	return -EINVAL;
+}
 
 #endif
+
+#endif /* _LINUX_SYSRQ_H */

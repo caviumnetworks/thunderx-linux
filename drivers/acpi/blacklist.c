@@ -3,6 +3,7 @@
  *
  *  Check to see if the given machine has a known bad ACPI BIOS
  *  or if the BIOS is too old.
+ *  Check given machine against acpi_rev_dmi_table[].
  *
  *  Copyright (C) 2004 Len Brown <len.brown@intel.com>
  *  Copyright (C) 2002 Andy Grover <andrew.grover@intel.com>
@@ -19,151 +20,148 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  General Public License for more details.
  *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
- *
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
 
-
 #include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/acpi.h>
-#include <acpi/acpi_bus.h>
 #include <linux/dmi.h>
 
-enum acpi_blacklist_predicates
-{
-        all_versions,
-        less_than_or_equal,
-        equal,
-        greater_than_or_equal,
+#include "internal.h"
+
+enum acpi_blacklist_predicates {
+	all_versions,
+	less_than_or_equal,
+	equal,
+	greater_than_or_equal,
 };
 
-struct acpi_blacklist_item
-{
-        char            oem_id[7];
-        char            oem_table_id[9];
-        u32             oem_revision;
-        acpi_table_type table;
-        enum acpi_blacklist_predicates oem_revision_predicate;
-        char            *reason;
-        u32             is_critical_error;
+struct acpi_blacklist_item {
+	char oem_id[7];
+	char oem_table_id[9];
+	u32 oem_revision;
+	char *table;
+	enum acpi_blacklist_predicates oem_revision_predicate;
+	char *reason;
+	u32 is_critical_error;
 };
+
+static struct dmi_system_id acpi_rev_dmi_table[] __initdata;
 
 /*
  * POLICY: If *anything* doesn't work, put it on the blacklist.
  *	   If they are critical errors, mark it critical, and abort driver load.
  */
-static struct acpi_blacklist_item acpi_blacklist[] __initdata =
-{
+static struct acpi_blacklist_item acpi_blacklist[] __initdata = {
 	/* Compaq Presario 1700 */
-	{"PTLTD ", "  DSDT  ", 0x06040000, ACPI_DSDT, less_than_or_equal, "Multiple problems", 1},
+	{"PTLTD ", "  DSDT  ", 0x06040000, ACPI_SIG_DSDT, less_than_or_equal,
+	 "Multiple problems", 1},
 	/* Sony FX120, FX140, FX150? */
-	{"SONY  ", "U0      ", 0x20010313, ACPI_DSDT, less_than_or_equal, "ACPI driver problem", 1},
+	{"SONY  ", "U0      ", 0x20010313, ACPI_SIG_DSDT, less_than_or_equal,
+	 "ACPI driver problem", 1},
 	/* Compaq Presario 800, Insyde BIOS */
-	{"INT440", "SYSFexxx", 0x00001001, ACPI_DSDT, less_than_or_equal, "Does not use _REG to protect EC OpRegions", 1},
+	{"INT440", "SYSFexxx", 0x00001001, ACPI_SIG_DSDT, less_than_or_equal,
+	 "Does not use _REG to protect EC OpRegions", 1},
 	/* IBM 600E - _ADR should return 7, but it returns 1 */
-	{"IBM   ", "TP600E  ", 0x00000105, ACPI_DSDT, less_than_or_equal, "Incorrect _ADR", 1},
-	{"ASUS\0\0", "P2B-S   ", 0, ACPI_DSDT, all_versions, "Bogus PCI routing", 1},
+	{"IBM   ", "TP600E  ", 0x00000105, ACPI_SIG_DSDT, less_than_or_equal,
+	 "Incorrect _ADR", 1},
 
 	{""}
 };
 
-
-#if	CONFIG_ACPI_BLACKLIST_YEAR
-
-static int __init
-blacklist_by_year(void)
-{
-	int year;
-	char *s = dmi_get_system_info(DMI_BIOS_DATE);
-
-	if (!s)
-		return 0;
-	if (!*s)
-		return 0;
-
-	s = strrchr(s, '/');
-	if (!s)
-		return 0;
-
-	s += 1;
-
-	year = simple_strtoul(s,NULL,0); 
-
-	if (year < 100) {		/* 2-digit year */
-		year += 1900;
-		if (year < 1996)	/* no dates < spec 1.0 */
-			year += 100;
-	}
-
-	if (year < CONFIG_ACPI_BLACKLIST_YEAR) {
-		printk(KERN_ERR PREFIX "BIOS age (%d) fails cutoff (%d), " 
-			"acpi=force is required to enable ACPI\n",
-			year, CONFIG_ACPI_BLACKLIST_YEAR);
-		return 1;
-	}
-	return 0;
-}
-#else
-static inline int blacklist_by_year(void) { return 0; }
-#endif
-
-int __init
-acpi_blacklisted(void)
+int __init acpi_blacklisted(void)
 {
 	int i = 0;
 	int blacklisted = 0;
-	struct acpi_table_header *table_header;
+	struct acpi_table_header table_header;
 
-	while (acpi_blacklist[i].oem_id[0] != '\0')
-	{
-		if (acpi_get_table_header_early(acpi_blacklist[i].table, &table_header)) {
+	while (acpi_blacklist[i].oem_id[0] != '\0') {
+		if (acpi_get_table_header(acpi_blacklist[i].table, 0, &table_header)) {
 			i++;
 			continue;
 		}
 
-		if (strncmp(acpi_blacklist[i].oem_id, table_header->oem_id, 6)) {
+		if (strncmp(acpi_blacklist[i].oem_id, table_header.oem_id, 6)) {
 			i++;
 			continue;
 		}
 
-		if (strncmp(acpi_blacklist[i].oem_table_id, table_header->oem_table_id, 8)) {
+		if (strncmp
+		    (acpi_blacklist[i].oem_table_id, table_header.oem_table_id,
+		     8)) {
 			i++;
 			continue;
 		}
 
 		if ((acpi_blacklist[i].oem_revision_predicate == all_versions)
-		    || (acpi_blacklist[i].oem_revision_predicate == less_than_or_equal
-		        && table_header->oem_revision <= acpi_blacklist[i].oem_revision)
-		    || (acpi_blacklist[i].oem_revision_predicate == greater_than_or_equal
-		        && table_header->oem_revision >= acpi_blacklist[i].oem_revision)
+		    || (acpi_blacklist[i].oem_revision_predicate ==
+			less_than_or_equal
+			&& table_header.oem_revision <=
+			acpi_blacklist[i].oem_revision)
+		    || (acpi_blacklist[i].oem_revision_predicate ==
+			greater_than_or_equal
+			&& table_header.oem_revision >=
+			acpi_blacklist[i].oem_revision)
 		    || (acpi_blacklist[i].oem_revision_predicate == equal
-		        && table_header->oem_revision == acpi_blacklist[i].oem_revision)) {
+			&& table_header.oem_revision ==
+			acpi_blacklist[i].oem_revision)) {
 
-			printk(KERN_ERR PREFIX "Vendor \"%6.6s\" System \"%8.8s\" "
-				"Revision 0x%x has a known ACPI BIOS problem.\n",
-				acpi_blacklist[i].oem_id,
-				acpi_blacklist[i].oem_table_id,
-				acpi_blacklist[i].oem_revision);
+			printk(KERN_ERR PREFIX
+			       "Vendor \"%6.6s\" System \"%8.8s\" "
+			       "Revision 0x%x has a known ACPI BIOS problem.\n",
+			       acpi_blacklist[i].oem_id,
+			       acpi_blacklist[i].oem_table_id,
+			       acpi_blacklist[i].oem_revision);
 
-			printk(KERN_ERR PREFIX "Reason: %s. This is a %s error\n",
-				acpi_blacklist[i].reason,
-				(acpi_blacklist[i].is_critical_error ? "non-recoverable" : "recoverable"));
+			printk(KERN_ERR PREFIX
+			       "Reason: %s. This is a %s error\n",
+			       acpi_blacklist[i].reason,
+			       (acpi_blacklist[i].
+				is_critical_error ? "non-recoverable" :
+				"recoverable"));
 
 			blacklisted = acpi_blacklist[i].is_critical_error;
 			break;
-		}
-		else {
+		} else {
 			i++;
 		}
 	}
 
-	blacklisted += blacklist_by_year();
+	(void)early_acpi_osi_init();
+	dmi_check_system(acpi_rev_dmi_table);
 
 	return blacklisted;
 }
+#ifdef CONFIG_DMI
+#ifdef CONFIG_ACPI_REV_OVERRIDE_POSSIBLE
+static int __init dmi_enable_rev_override(const struct dmi_system_id *d)
+{
+	printk(KERN_NOTICE PREFIX "DMI detected: %s (force ACPI _REV to 5)\n",
+	       d->ident);
+	acpi_rev_override_setup(NULL);
+	return 0;
+}
+#endif
 
+static struct dmi_system_id acpi_rev_dmi_table[] __initdata = {
+#ifdef CONFIG_ACPI_REV_OVERRIDE_POSSIBLE
+	/*
+	 * DELL XPS 13 (2015) switches sound between HDA and I2S
+	 * depending on the ACPI _REV callback. If userspace supports
+	 * I2S sufficiently (or if you do not care about sound), you
+	 * can safely disable this quirk.
+	 */
+	{
+	 .callback = dmi_enable_rev_override,
+	 .ident = "DELL XPS 13 (2015)",
+	 .matches = {
+		      DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+		      DMI_MATCH(DMI_PRODUCT_NAME, "XPS 13 9343"),
+		},
+	},
+#endif
+	{}
+};
+
+#endif /* CONFIG_DMI */

@@ -7,14 +7,11 @@
  *                            Hitoshi Yamamoto
  */
 
-/* $Id$ */
-
 #include <linux/init.h>
 __INIT
 __INITDATA
 
 	.text
-#include <linux/config.h>
 #include <linux/linkage.h>
 #include <asm/segment.h>
 #include <asm/page.h>
@@ -26,13 +23,12 @@ __INITDATA
 /*
  * References to members of the boot_cpu_data structure.
  */
-	.text
+__HEAD
 	.global	start_kernel
 	.global __bss_start
 	.global _end
 ENTRY(stext)
 ENTRY(_stext)
-ENTRY(startup_32)
 	/* Setup up the stack pointer */
 	LDIMM	(r0, spi_stack_top)
 	LDIMM	(r1, spu_stack_top)
@@ -137,7 +133,6 @@ loop1:
 /*
  * AP startup routine
  */
-	.text
 	.global	eit_vector
 ENTRY(startup_AP)
 ;; setup EVB
@@ -234,6 +229,7 @@ ENTRY(startup_AP)
 	nop
 #endif  /* CONFIG_SMP */
 
+	.text
 ENTRY(stack_start)
 	.long	init_thread_union+8192
 	.long	__KERNEL_DS
@@ -272,13 +268,13 @@ ENTRY(empty_zero_page)
 /*------------------------------------------------------------------------
  * Stack area
  */
-	.section .spi
+	.section .init.data, "aw"
 	ALIGN
 	.global spi_stack_top
 	.zero	1024
 spi_stack_top:
 
-	.section .spu
+	.section .init.data, "aw"
 	ALIGN
 	.global spu_stack_top
 	.zero	1024

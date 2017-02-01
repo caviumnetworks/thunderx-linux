@@ -1,7 +1,7 @@
 /*
  *	Initialisation code for Cyrix/NatSemi VSA1 softaudio
  *
- *	(C) Copyright 2003 Red Hat Inc <alan@redhat.com>
+ *	(C) Copyright 2003 Red Hat Inc <alan@lxorguk.ukuu.org.uk>
  *
  * XpressAudio(tm) is used on the Cyrix MediaGX (now NatSemi Geode) systems.
  * The older version (VSA1) provides fairly good soundblaster emulation
@@ -27,11 +27,11 @@
  *	same manner.
  */
 
-#include <linux/config.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/slab.h>
 
 #include "sound_config.h"
 
@@ -43,7 +43,7 @@
  *	not real hardware.
  */
 
-static u8 __devinit mixer_read(unsigned long io, u8 reg)
+static u8 mixer_read(unsigned long io, u8 reg)
 {
 	outb(reg, io + 4);
 	udelay(20);
@@ -52,7 +52,7 @@ static u8 __devinit mixer_read(unsigned long io, u8 reg)
 	return reg;
 }
 
-static int __devinit probe_one(struct pci_dev *pdev, const struct pci_device_id *ent)
+static int probe_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct address_info *hw_config;
 	unsigned long base;
@@ -68,7 +68,7 @@ static int __devinit probe_one(struct pci_dev *pdev, const struct pci_device_id 
 		return 1;
 	
 	mem = ioremap(base, 128);
-	if(mem == 0UL)
+	if (!mem)
 		return 1;
 	map = readw(mem + 0x18);	/* Read the SMI enables */
 	iounmap(mem);
@@ -140,13 +140,12 @@ static int __devinit probe_one(struct pci_dev *pdev, const struct pci_device_id 
 	printk(KERN_INFO "kahlua: XpressAudio on IRQ %d, DMA %d, %d\n",
 		irq, dma8, dma16);
 	
-	hw_config = kmalloc(sizeof(struct address_info), GFP_KERNEL);
+	hw_config = kzalloc(sizeof(struct address_info), GFP_KERNEL);
 	if(hw_config == NULL)
 	{
 		printk(KERN_ERR "kahlua: out of memory.\n");
 		return 1;
 	}
-	memset(hw_config, 0, sizeof(*hw_config));
 	
 	pci_set_drvdata(pdev, hw_config);
 	
@@ -179,16 +178,14 @@ static int __devinit probe_one(struct pci_dev *pdev, const struct pci_device_id 
 	return 0;
 
 err_out_free:
-	pci_set_drvdata(pdev, NULL);
 	kfree(hw_config);
 	return 1;
 }
 
-static void __devexit remove_one(struct pci_dev *pdev)
+static void remove_one(struct pci_dev *pdev)
 {
 	struct address_info *hw_config = pci_get_drvdata(pdev);
 	sb_dsp_unload(hw_config, 0);
-	pci_set_drvdata(pdev, NULL);
 	kfree(hw_config);
 }
 
@@ -200,8 +197,8 @@ MODULE_LICENSE("GPL");
  *	5530 only. The 5510/5520 decode is different.
  */
 
-static struct pci_device_id id_tbl[] = {
-	{ PCI_VENDOR_ID_CYRIX, PCI_DEVICE_ID_CYRIX_5530_AUDIO, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
+static const struct pci_device_id id_tbl[] = {
+	{ PCI_VDEVICE(CYRIX, PCI_DEVICE_ID_CYRIX_5530_AUDIO), 0 },
 	{ }
 };
 
@@ -211,17 +208,17 @@ static struct pci_driver kahlua_driver = {
 	.name		= "kahlua",
 	.id_table	= id_tbl,
 	.probe		= probe_one,
-	.remove		= __devexit_p(remove_one),
+	.remove		= remove_one,
 };
 
 
 static int __init kahlua_init_module(void)
 {
 	printk(KERN_INFO "Cyrix Kahlua VSA1 XpressAudio support (c) Copyright 2003 Red Hat Inc\n");
-	return pci_module_init(&kahlua_driver);
+	return pci_register_driver(&kahlua_driver);
 }
 
-static void __devexit kahlua_cleanup_module(void)
+static void kahlua_cleanup_module(void)
 {
 	pci_unregister_driver(&kahlua_driver);
 }

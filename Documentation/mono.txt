@@ -26,11 +26,11 @@ other program after you have done the following:
    the kernel (CONFIG_BINFMT_MISC) and set it up properly.
    If you choose to compile it as a module, you will have
    to insert it manually with modprobe/insmod, as kmod
-   can not be easily supported with binfmt_misc. 
+   cannot be easily supported with binfmt_misc. 
    Read the file 'binfmt_misc.txt' in this directory to know
    more about the configuration process.
 
-3) Add the following enries to /etc/rc.local or similar script
+3) Add the following entries to /etc/rc.local or similar script
    to be run at system startup:
 
 # Insert BINFMT_MISC module into the kernel
@@ -38,11 +38,11 @@ if [ ! -e /proc/sys/fs/binfmt_misc/register ]; then
         /sbin/modprobe binfmt_misc
 	# Some distributions, like Fedora Core, perform
 	# the following command automatically when the
-	# binfmt_misc module is loaded into the kernel.
+	# binfmt_misc module is loaded into the kernel
+	# or during normal boot up (systemd-based systems).
 	# Thus, it is possible that the following line
-	# is not needed at all. Look at /etc/modprobe.conf
-	# to check whether this is applicable or not.
-        mount -t binfmt_misc none /proc/sys/fs/binfmt_misc
+	# is not needed at all.
+	mount -t binfmt_misc none /proc/sys/fs/binfmt_misc
 fi
 
 # Register support for .NET CLR binaries

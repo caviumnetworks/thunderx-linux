@@ -1,5 +1,5 @@
 /*
- * sound/sound_timer.c
+ * sound/oss/sound_timer.c
  */
 /*
  * Copyright (C) by Hannu Savolainen 1993-1997
@@ -17,7 +17,7 @@
 #include "sound_config.h"
 
 static volatile int initialized, opened, tmr_running;
-static volatile time_t tmr_offs, tmr_ctr;
+static volatile unsigned int tmr_offs, tmr_ctr;
 static volatile unsigned long ticks_offs;
 static volatile int curr_tempo, curr_timebase;
 static volatile unsigned long curr_ticks;
@@ -26,7 +26,7 @@ static unsigned long prev_event_time;
 static volatile unsigned long usecs_per_tmr;	/* Length of the current interval */
 
 static struct sound_lowlev_timer *tmr;
-static spinlock_t lock;
+static DEFINE_SPINLOCK(lock);
 
 static unsigned long tmr2ticks(int tmr_value)
 {
@@ -76,6 +76,7 @@ void sound_timer_syncinterval(unsigned int new_usecs)
 	tmr_ctr = 0;
 	usecs_per_tmr = new_usecs;
 }
+EXPORT_SYMBOL(sound_timer_syncinterval);
 
 static void tmr_reset(void)
 {
@@ -300,6 +301,7 @@ void sound_timer_interrupt(void)
 	}
 	spin_unlock_irqrestore(&lock,flags);
 }
+EXPORT_SYMBOL(sound_timer_interrupt);
 
 void  sound_timer_init(struct sound_lowlev_timer *t, char *name)
 {
@@ -318,6 +320,8 @@ void  sound_timer_init(struct sound_lowlev_timer *t, char *name)
 	n = sound_alloc_timerdev();
 	if (n == -1)
 		n = 0;		/* Overwrite the system timer */
-	strcpy(sound_timer.info.name, name);
+	strlcpy(sound_timer.info.name, name, sizeof(sound_timer.info.name));
 	sound_timer_devs[n] = &sound_timer;
 }
+EXPORT_SYMBOL(sound_timer_init);
+
